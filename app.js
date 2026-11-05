@@ -598,6 +598,13 @@ function wire() {
     settings.presets.push({ work: w, brk: b }); $("newWork").value = ""; $("newBreak").value = ""; afterSettingsChange();
   });
 
+  $("manual").addEventListener("toggle", function () {
+    if (!this.open) return;
+    var d = new Date(Date.now() - 25 * 60000);
+    if (!$("mDate").value) $("mDate").value = ymd(d);
+    if (!$("mTime").value) $("mTime").value = pad(d.getHours()) + ":" + pad(d.getMinutes());
+    if (!$("mMin").value) $("mMin").value = 25;
+  });
   $("manualForm").addEventListener("submit", function (e) {
     e.preventDefault();
     var d = $("mDate").value, t = $("mTime").value, m = parseInt($("mMin").value, 10);
