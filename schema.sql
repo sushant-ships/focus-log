@@ -36,3 +36,10 @@ create policy "own settings" on public.user_settings
   for all to authenticated
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
+
+-- Only signed-in users can reach these tables through the API.
+-- (Needed when "Automatically expose new tables" is turned off.)
+revoke all on public.sessions from anon;
+revoke all on public.user_settings from anon;
+grant select, insert, update, delete on public.sessions to authenticated;
+grant select, insert, update, delete on public.user_settings to authenticated;
