@@ -28,14 +28,14 @@ alter table public.user_settings enable row level security;
 drop policy if exists "own sessions" on public.sessions;
 create policy "own sessions" on public.sessions
   for all to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
+  using ((select auth.uid()) = user_id)
+  with check ((select auth.uid()) = user_id);
 
 drop policy if exists "own settings" on public.user_settings;
 create policy "own settings" on public.user_settings
   for all to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
+  using ((select auth.uid()) = user_id)
+  with check ((select auth.uid()) = user_id);
 
 -- Only signed-in users can reach these tables through the API.
 -- (Needed when "Automatically expose new tables" is turned off.)
