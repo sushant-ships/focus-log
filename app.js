@@ -94,7 +94,12 @@ function initAuth() {
   sb = window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
   });
-  sb.auth.onAuthStateChange(function (ev, sess) { setTimeout(function () { onSession(sess); }, 0); });
+  sb.auth.onAuthStateChange(function (ev, sess) {
+    setTimeout(function () {
+      if (ev === "PASSWORD_RECOVERY") { recovering = true; showRecovery(); return; }
+      if (!recovering) onSession(sess);
+    }, 0);
+  });
   sb.auth.getSession().then(function (r) { onSession(r && r.data ? r.data.session : null); }).catch(function () { onSession(null); });
 }
 
@@ -109,28 +114,67 @@ function onSession(sess) {
   }
 }
 
-function sendLink(e) {
-  e.preventDefault();
-  var email = $("email").value.trim();
-  if (!email) return;
-  $("loginErr").textContent = ""; $("sendBtn").disabled = true;
-  sb.auth.signInWithOtp({ email: email, options: { emailRedirectTo: location.origin + location.pathname } }).then(function (r) {
-    $("sendBtn").disabled = false;
-    if (r.error) { $("loginErr").textContent = r.error.message; return; }
-    $("codeWrap").hidden = false;
-    $("sentMsg").textContent = "Sent to " + email + ". Tap the link in the email, or type the code from it below.";
-    $("code").focus();
-  }).catch(function () { $("sendBtn").disabled = false; $("loginErr").textContent = "Couldn't reach the server. Check your connection."; });
+var signupMode = false, recovering = false;
+function setMode(up) {
+  signupMode = up;
+  $("authBtn").textContent = up ? "Create account" : "Sign in";
+  $("modeBtn").textContent = up ? "I already have an account" : "Create an account";
+  $("password").setAttribute("autocomplete", up ? "new-password" : "current-password");
+  $("password").placeholder = up ? "Password (8+ characters)" : "Password";
+  $("authMsg").textContent = up ? "Create your account. You only do this once." : "Sign in to sync your sessions across devices.";
+  $("loginErr").textContent = "";
 }
-function verifyCode(e) {
+function authErr(r) {
+  var m = (r && r.error && r.error.message) || "";
+  if (/invalid login credentials/i.test(m)) return "Wrong email or password.";
+  if (/signups? not allowed|signup is disabled/i.test(m)) return "New accounts are turned off for this app.";
+  if (/already registered/i.test(m)) return "That email already has an account. Sign in instead.";
+  return m || "Something went wrong.";
+}
+function submitAuth(e) {
   e.preventDefault();
-  var email = $("email").value.trim(), token = $("code").value.trim();
-  if (!email || !token) return;
-  $("loginErr").textContent = ""; $("codeBtn").disabled = true;
-  sb.auth.verifyOtp({ email: email, token: token, type: "email" }).then(function (r) {
-    $("codeBtn").disabled = false;
-    if (r.error) $("loginErr").textContent = r.error.message;
-  }).catch(function () { $("codeBtn").disabled = false; $("loginErr").textContent = "Couldn't reach the server."; });
+  var email = $("email").value.trim(), pw = $("password").value;
+  if (!email || pw.length < 8) { $("loginErr").textContent = "Enter your email and a password of at least 8 characters."; return; }
+  $("loginErr").textContent = ""; $("authBtn").disabled = true;
+  var call = signupMode ? sb.auth.signUp({ email: email, password: pw, options: { emailRedirectTo: location.origin + location.pathname } })
+                        : sb.auth.signInWithPassword({ email: email, password: pw });
+  call.then(function (r) {
+    $("authBtn").disabled = false;
+    if (r.error) { $("loginErr").textContent = authErr(r); return; }
+    if (signupMode && r.data && !r.data.session) {
+      $("authMsg").textContent = "Account created. Check your email for a confirmation link, then come back and sign in.";
+      setTimeout(function () { setMode(false); $("authMsg").textContent = "Confirm your email, then sign in here."; }, 50);
+    }
+  }).catch(function () { $("authBtn").disabled = false; $("loginErr").textContent = "Couldn't reach the server. Check your connection."; });
+}
+function forgot() {
+  var email = $("email").value.trim();
+  if (!email) { $("loginErr").textContent = "Type your email above first, then tap Forgot password."; return; }
+  $("loginErr").textContent = "";
+  sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname }).then(function (r) {
+    if (r.error) { $("loginErr").textContent = authErr(r); return; }
+    $("authMsg").textContent = "If that email has an account, a reset link is on its way. Open it on this device.";
+  }).catch(function () { $("loginErr").textContent = "Couldn't reach the server."; });
+}
+function showRecovery() {
+  show("loginView");
+  $("authForm").hidden = true; $("authLinks").hidden = true; $("newPwForm").hidden = false;
+  $("authMsg").textContent = "Choose a new password.";
+  $("newPw").focus();
+}
+function saveNewPw(e) {
+  e.preventDefault();
+  var pw = $("newPw").value;
+  if (pw.length < 8) { $("loginErr").textContent = "Use at least 8 characters."; return; }
+  $("newPwBtn").disabled = true;
+  sb.auth.updateUser({ password: pw }).then(function (r) {
+    $("newPwBtn").disabled = false;
+    if (r.error) { $("loginErr").textContent = authErr(r); return; }
+    recovering = false;
+    $("authForm").hidden = false; $("authLinks").hidden = false; $("newPwForm").hidden = true; $("newPw").value = "";
+    sb.auth.getSession().then(function (s) { onSession(s && s.data ? s.data.session : null); });
+    toast("Password updated");
+  }).catch(function () { $("newPwBtn").disabled = false; $("loginErr").textContent = "Couldn't reach the server."; });
 }
 function signOut() {
   if (!sb) return;
@@ -515,8 +559,10 @@ function buildAll() {
 }
 
 function wire() {
-  $("emailForm").addEventListener("submit", sendLink);
-  $("codeForm").addEventListener("submit", verifyCode);
+  $("authForm").addEventListener("submit", submitAuth);
+  $("newPwForm").addEventListener("submit", saveNewPw);
+  $("modeBtn").addEventListener("click", function () { setMode(!signupMode); });
+  $("forgotBtn").addEventListener("click", forgot);
   $("signout").addEventListener("click", signOut);
   $("sound").addEventListener("change", function () { S.sound = this.checked; persistTimer(); if (S.sound) ensureAudio(); });
   $("note").addEventListener("input", persistTimer);

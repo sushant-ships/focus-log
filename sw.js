@@ -1,5 +1,5 @@
 // Caches the app shell so Focus Log opens offline. Supabase API calls are never cached.
-var CACHE = "focuslog-shell-v1";
+var CACHE = "focuslog-shell-v2";
 var SHELL = ["./", "index.html", "app.js", "config.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png"];
 
 self.addEventListener("install", function (e) {

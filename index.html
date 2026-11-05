@@ -185,17 +185,19 @@ code{font-family:var(--f-mono); font-size:13px; background:var(--bg); padding:2p
 <main class="app" id="loginView" hidden>
   <section class="card login">
     <h1>Focus Log</h1>
-    <p class="msg">Sign in with your email. You get a link, and the same email also carries a 6 digit code you can type here (handy on an installed app).</p>
-    <form id="emailForm">
-      <input type="email" id="email" required autocomplete="email" placeholder="you@example.com" aria-label="Email">
-      <button class="btn primary" id="sendBtn" type="submit">Email me a sign-in link</button>
+    <p class="msg" id="authMsg">Sign in to sync your sessions across devices.</p>
+    <form id="authForm">
+      <input type="email" id="email" required autocomplete="email" placeholder="Email" aria-label="Email">
+      <input type="password" id="password" required minlength="8" autocomplete="current-password" placeholder="Password" aria-label="Password">
+      <button class="btn primary" id="authBtn" type="submit">Sign in</button>
     </form>
-    <div class="codewrap" id="codeWrap" hidden>
-      <p class="msg" id="sentMsg"></p>
-      <form id="codeForm">
-        <input type="text" id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="6 digit code" aria-label="Sign-in code">
-        <button class="btn" id="codeBtn" type="submit">Verify code</button>
-      </form>
+    <form id="newPwForm" hidden>
+      <input type="password" id="newPw" required minlength="8" autocomplete="new-password" placeholder="New password (8+ characters)" aria-label="New password">
+      <button class="btn primary" id="newPwBtn" type="submit">Save new password</button>
+    </form>
+    <div class="inline" id="authLinks">
+      <button class="small link" id="modeBtn" type="button">Create an account</button>
+      <button class="small link" id="forgotBtn" type="button">Forgot password?</button>
     </div>
     <p class="msg err" id="loginErr" role="alert"></p>
   </section>
