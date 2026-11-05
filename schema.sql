@@ -41,5 +41,7 @@ create policy "own settings" on public.user_settings
 -- (Needed when "Automatically expose new tables" is turned off.)
 revoke all on public.sessions from anon;
 revoke all on public.user_settings from anon;
+revoke truncate, references, trigger on public.sessions from authenticated;
 grant select, insert, update, delete on public.sessions to authenticated;
+revoke truncate, references, trigger on public.user_settings from authenticated;
 grant select, insert, update, delete on public.user_settings to authenticated;
