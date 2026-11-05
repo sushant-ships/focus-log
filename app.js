@@ -1,0 +1,572 @@
+(function () {
+"use strict";
+
+var CFG = window.FOCUSLOG_CONFIG || {};
+var $ = function (id) { return document.getElementById(id); };
+var DEFAULTS = {
+  goal: 3.5,
+  cats: ["School", "Arabic", "Business", "Career", "Other"],
+  presets: [{ work: 25, brk: 5 }, { work: 50, brk: 10 }]
+};
+var K_TIMER = "focuslog.timer.v2", K_CACHE = "focuslog.cache.v2", K_PEND = "focuslog.pending.v2";
+var R = 108, C = 2 * Math.PI * R;
+var DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+var sb = null, user = null, appStarted = false;
+var settings = clone(DEFAULTS);
+var sessions = [], loaded = false, weekOffset = 0, showCount = 30;
+var armed = null, armTimer = null, audioCtx = null, toastTimer = null, tickHandle = null;
+var S = { phase: "idle", preset: "25/5", running: false, endAt: 0, remaining: 25 * 60000, startedAt: null, cat: "School", sound: true };
+
+/* ---------- helpers ---------- */
+function clone(o) { return JSON.parse(JSON.stringify(o)); }
+function pad(n) { return n < 10 ? "0" + n : "" + n; }
+function clock(ms) { var s = Math.ceil(ms / 1000); return pad(Math.floor(s / 60)) + ":" + pad(s % 60); }
+function dur(secs) { var m = Math.round(secs / 60); if (m < 60) return m + " min"; var h = Math.floor(m / 60), r = m % 60; return r ? h + "h " + r + "m" : h + "h"; }
+function hm(secs) { var m = Math.round(secs / 60), h = Math.floor(m / 60), r = m % 60; return h ? (r ? h + "h " + r + "m" : h + "h") : r + "m"; }
+function tm(iso) { var d = new Date(iso); return isNaN(d) ? "" : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
+function dayLabel(d) { return d.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" }); }
+function ymd(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
+function uuid() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  var b = new Uint8Array(16); crypto.getRandomValues(b);
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+  var h = Array.prototype.map.call(b, function (x) { return (x + 256).toString(16).slice(1); }).join("");
+  return h.slice(0, 8) + "-" + h.slice(8, 12) + "-" + h.slice(12, 16) + "-" + h.slice(16, 20) + "-" + h.slice(20);
+}
+function lsGet(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+function lsDel(k) { try { localStorage.removeItem(k); } catch (e) {} }
+function label(p) { return p.work + "/" + p.brk; }
+function P() {
+  for (var i = 0; i < settings.presets.length; i++) if (label(settings.presets[i]) === S.preset) return settings.presets[i];
+  return settings.presets[0];
+}
+function totalMs() { var p = P(); return (S.phase === "break" ? p.brk : p.work) * 60000; }
+
+function toast(msg) {
+  var t = $("toast"); t.textContent = msg; t.className = "show";
+  clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.className = ""; }, 3200);
+}
+function addBanner(key, text, actions) {
+  removeBanner(key);
+  var box = document.createElement("div"); box.className = "banner"; box.setAttribute("data-key", key);
+  var s = document.createElement("span"); s.textContent = text; box.appendChild(s);
+  (actions || []).forEach(function (a) {
+    var b = document.createElement("button"); b.type = "button"; b.className = "small"; b.textContent = a.label; b.addEventListener("click", a.fn); box.appendChild(b);
+  });
+  $("banners").appendChild(box);
+}
+function removeBanner(key) { var n = $("banners").querySelector('[data-key="' + key + '"]'); if (n) n.remove(); }
+
+function ensureAudio() {
+  try {
+    if (!audioCtx) { var AC = window.AudioContext || window.webkitAudioContext; if (AC) audioCtx = new AC(); }
+    if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+  } catch (e) {}
+}
+function bell() {
+  if (!S.sound) return;
+  try {
+    if (!audioCtx) return;
+    var t = audioCtx.currentTime;
+    [0, 0.28, 0.56].forEach(function (o) {
+      var osc = audioCtx.createOscillator(), g = audioCtx.createGain();
+      osc.type = "sine"; osc.frequency.value = 880;
+      g.gain.setValueAtTime(0.0001, t + o);
+      g.gain.exponentialRampToValueAtTime(0.25, t + o + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + o + 0.22);
+      osc.connect(g); g.connect(audioCtx.destination); osc.start(t + o); osc.stop(t + o + 0.24);
+    });
+  } catch (e) {}
+}
+
+/* ---------- views / auth ---------- */
+function show(view) {
+  ["setupView", "loginView", "appView"].forEach(function (id) { $(id).hidden = (id !== view); });
+}
+
+function initAuth() {
+  if (!CFG.SUPABASE_URL || !CFG.SUPABASE_ANON_KEY) { show("setupView"); return; }
+  if (!window.supabase || !window.supabase.createClient) {
+    show("loginView"); $("loginErr").textContent = "Couldn't load the sign-in library. Check your connection and reload."; return;
+  }
+  sb = window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+  });
+  sb.auth.onAuthStateChange(function (ev, sess) { setTimeout(function () { onSession(sess); }, 0); });
+  sb.auth.getSession().then(function (r) { onSession(r && r.data ? r.data.session : null); }).catch(function () { onSession(null); });
+}
+
+function onSession(sess) {
+  if (sess && sess.user) {
+    if (user && user.id === sess.user.id && appStarted) return;
+    user = sess.user;
+    startApp();
+  } else {
+    if (!user && !appStarted) { show("loginView"); }
+    else if (user) { user = null; appStarted = false; show("loginView"); }
+  }
+}
+
+function sendLink(e) {
+  e.preventDefault();
+  var email = $("email").value.trim();
+  if (!email) return;
+  $("loginErr").textContent = ""; $("sendBtn").disabled = true;
+  sb.auth.signInWithOtp({ email: email, options: { emailRedirectTo: location.origin + location.pathname } }).then(function (r) {
+    $("sendBtn").disabled = false;
+    if (r.error) { $("loginErr").textContent = r.error.message; return; }
+    $("codeWrap").hidden = false;
+    $("sentMsg").textContent = "Sent to " + email + ". Tap the link in the email, or type the code from it below.";
+    $("code").focus();
+  }).catch(function () { $("sendBtn").disabled = false; $("loginErr").textContent = "Couldn't reach the server. Check your connection."; });
+}
+function verifyCode(e) {
+  e.preventDefault();
+  var email = $("email").value.trim(), token = $("code").value.trim();
+  if (!email || !token) return;
+  $("loginErr").textContent = ""; $("codeBtn").disabled = true;
+  sb.auth.verifyOtp({ email: email, token: token, type: "email" }).then(function (r) {
+    $("codeBtn").disabled = false;
+    if (r.error) $("loginErr").textContent = r.error.message;
+  }).catch(function () { $("codeBtn").disabled = false; $("loginErr").textContent = "Couldn't reach the server."; });
+}
+function signOut() {
+  if (!sb) return;
+  sb.auth.signOut().then(function () {
+    lsDel(K_CACHE); lsDel(K_PEND); sessions = []; loaded = false; settings = clone(DEFAULTS);
+    user = null; appStarted = false; show("loginView");
+  });
+}
+
+/* ---------- data ---------- */
+function rowToSession(r) {
+  return { id: r.id, startedAt: r.started_at, endedAt: r.ended_at, seconds: r.seconds, category: r.category, note: r.note || "", preset: r.preset || "", completed: r.completed !== false };
+}
+function sessionToRow(s) {
+  return { id: s.id, started_at: s.startedAt, ended_at: s.endedAt, seconds: s.seconds, category: s.category, note: s.note || "", preset: s.preset || "", completed: s.completed !== false };
+}
+function sortSessions() { sessions.sort(function (a, b) { return Date.parse(b.startedAt) - Date.parse(a.startedAt); }); }
+function cacheNow() { if (user) lsSet(K_CACHE, { uid: user.id, sessions: sessions, settings: settings }); }
+function pendingList() { var p = lsGet(K_PEND); return (p && p.uid === (user && user.id) && p.items) ? p.items : []; }
+function setPending(items) { if (items.length) lsSet(K_PEND, { uid: user.id, items: items }); else lsDel(K_PEND); updatePendingBanner(); }
+function updatePendingBanner() {
+  var n = pendingList().length;
+  if (n) addBanner("pending", n + " session" + (n > 1 ? "s" : "") + " not synced yet. They are safe on this device.", [{ label: "Sync now", fn: flushPending }]);
+  else removeBanner("pending");
+}
+function flushPending() {
+  var items = pendingList(); if (!items.length || !sb || !user) return;
+  sb.from("sessions").upsert(items.map(sessionToRow)).then(function (r) {
+    if (r.error) { toast("Still can't sync (" + r.error.message + ")"); return; }
+    setPending([]); toast("Synced " + items.length + " session" + (items.length > 1 ? "s" : ""));
+  }).catch(function () { toast("Still offline. Will retry."); });
+}
+
+function startApp() {
+  appStarted = true;
+  show("appView");
+  $("who").textContent = user.email || "";
+  var cache = lsGet(K_CACHE);
+  if (cache && cache.uid === user.id) {
+    sessions = cache.sessions || []; if (cache.settings) mergeSettings(cache.settings);
+    loaded = true;
+  } else { sessions = []; loaded = false; }
+  restoreTimer();
+  buildAll();
+  updatePendingBanner();
+  fetchRemote();
+}
+function mergeSettings(s) {
+  if (typeof s.goal === "number" && s.goal > 0) settings.goal = s.goal;
+  if (Array.isArray(s.cats) && s.cats.length) settings.cats = s.cats;
+  if (Array.isArray(s.presets) && s.presets.length) settings.presets = s.presets;
+}
+function fetchRemote() {
+  if (!sb || !user) return;
+  var slow = setTimeout(function () { if (!loaded) addBanner("slow", "Loading is taking a while. The timer works in the meantime.", []); }, 10000);
+  Promise.all([
+    sb.from("sessions").select("*").order("started_at", { ascending: false }).limit(5000),
+    sb.from("user_settings").select("*").maybeSingle()
+  ]).then(function (res) {
+    clearTimeout(slow); removeBanner("slow");
+    var a = res[0], b = res[1];
+    if (a.error) { addBanner("loaderr", "Couldn't load sessions (" + a.error.message + "). Showing saved copy.", [{ label: "Retry", fn: function () { removeBanner("loaderr"); fetchRemote(); } }]); loaded = true; renderAll(); return; }
+    removeBanner("loaderr");
+    var remote = a.data.map(rowToSession);
+    var ids = {}; remote.forEach(function (s) { ids[s.id] = 1; });
+    pendingList().forEach(function (s) { if (!ids[s.id]) remote.push(s); });
+    sessions = remote; sortSessions();
+    if (b && !b.error && b.data) {
+      mergeSettings({ goal: Number(b.data.goal_hours), cats: b.data.categories, presets: b.data.presets });
+      buildSettings(); buildTimerChoices();
+    }
+    loaded = true; cacheNow(); renderAll(); renderTimer(); flushPending();
+  }).catch(function () {
+    clearTimeout(slow); removeBanner("slow"); loaded = true;
+    addBanner("offline", "Offline. Showing your saved copy.", []); renderAll();
+  });
+}
+
+function saveSession(s) {
+  s.id = uuid();
+  sessions.push(s); sortSessions(); cacheNow(); renderAll();
+  if (!sb || !user) return;
+  sb.from("sessions").upsert(sessionToRow(s)).then(function (r) {
+    if (r.error) throw r.error;
+    toast("Saved " + dur(s.seconds) + " of " + s.category.toLowerCase());
+  }).catch(function () {
+    setPending(pendingList().concat([s]));
+    toast("Saved on this device. Will sync when online.");
+  });
+}
+function deleteSession(id) {
+  var idx = -1; sessions.forEach(function (s, i) { if (s.id === id) idx = i; });
+  if (idx < 0) return;
+  var gone = sessions.splice(idx, 1)[0];
+  cacheNow(); renderAll();
+  var pend = pendingList();
+  if (pend.some(function (s) { return s.id === id; })) { setPending(pend.filter(function (s) { return s.id !== id; })); toast("Session deleted"); return; }
+  sb.from("sessions").delete().eq("id", id).then(function (r) {
+    if (r.error) throw r.error;
+    toast("Session deleted");
+  }).catch(function () {
+    sessions.push(gone); sortSessions(); cacheNow(); renderAll(); toast("Couldn't delete. Check your connection.");
+  });
+}
+function saveSettings() {
+  cacheNow();
+  if (!sb || !user) return;
+  sb.from("user_settings").upsert({ user_id: user.id, goal_hours: settings.goal, categories: settings.cats, presets: settings.presets, updated_at: new Date().toISOString() }).then(function (r) {
+    if (r.error) toast("Couldn't sync settings (" + r.error.message + ")");
+  }).catch(function () { toast("Settings saved on this device only for now."); });
+}
+
+/* ---------- timer ---------- */
+function persistTimer() {
+  lsSet(K_TIMER, { uid: user && user.id, phase: S.phase, preset: S.preset, running: S.running, endAt: S.endAt, remaining: S.remaining, startedAt: S.startedAt, cat: S.cat, sound: S.sound, note: $("note").value });
+}
+function toIdle() { S.phase = "idle"; S.running = false; S.remaining = P().work * 60000; S.startedAt = null; }
+
+function renderTimer() {
+  var rem = S.running ? Math.max(0, S.endAt - Date.now()) : S.remaining;
+  var total = totalMs();
+  $("clock").textContent = clock(rem);
+  $("ring").style.strokeDasharray = String(C);
+  $("ring").style.strokeDashoffset = String(C * (1 - (total ? rem / total : 1)));
+  $("timer").setAttribute("data-phase", S.phase);
+  $("phase").textContent = S.phase === "idle" ? "Ready" : S.phase === "break" ? "Break" : (S.running ? "Focus" : "Paused");
+  document.title = S.running ? clock(rem) + " " + (S.phase === "work" ? "Focus" : "Break") + " | Focus Log" : "Focus Log";
+}
+function renderControls() {
+  var main = $("main"), stop = $("stop"), disc = $("discard");
+  if (S.phase === "idle") { main.textContent = "Start"; stop.hidden = true; disc.hidden = true; }
+  else if (S.phase === "work") { main.textContent = S.running ? "Pause" : "Resume"; stop.hidden = false; disc.hidden = S.running; }
+  else { main.textContent = "Skip break"; stop.hidden = true; disc.hidden = true; }
+  var locked = S.phase !== "idle";
+  document.querySelectorAll('input[name="preset"]').forEach(function (r) { r.disabled = locked; r.checked = (r.value === S.preset); });
+  disc.textContent = "Discard";
+}
+function makeRec(seconds, endedISO, completed) {
+  return { startedAt: S.startedAt, endedAt: endedISO, seconds: seconds, category: S.cat, note: $("note").value.trim().slice(0, 200), preset: label(P()), completed: completed };
+}
+function mainClick() {
+  if (S.phase === "idle") {
+    ensureAudio();
+    S.phase = "work"; S.remaining = P().work * 60000; S.startedAt = new Date().toISOString();
+    S.running = true; S.endAt = Date.now() + S.remaining;
+  } else if (S.phase === "work") {
+    ensureAudio();
+    if (S.running) { S.remaining = Math.max(0, S.endAt - Date.now()); S.running = false; }
+    else { S.running = true; S.endAt = Date.now() + S.remaining; }
+  } else { toIdle(); }
+  persistTimer(); renderControls(); renderTimer();
+}
+function stopSave() {
+  if (S.phase !== "work") return;
+  var rem = S.running ? Math.max(0, S.endAt - Date.now()) : S.remaining;
+  var workMs = P().work * 60000 - rem;
+  if (workMs >= 60000) saveSession(makeRec(Math.round(workMs / 1000), new Date().toISOString(), false));
+  else toast("Under 1 minute, so nothing was saved.");
+  toIdle(); persistTimer(); renderControls(); renderTimer();
+}
+function discardClick() {
+  if (armed !== "discard") {
+    armed = "discard"; $("discard").textContent = "Tap again to discard";
+    clearTimeout(armTimer); armTimer = setTimeout(function () { armed = null; $("discard").textContent = "Discard"; }, 4000);
+    return;
+  }
+  armed = null; clearTimeout(armTimer);
+  toIdle(); persistTimer(); renderControls(); renderTimer();
+}
+function phaseDone() {
+  if (S.phase === "work") {
+    var p = P();
+    saveSession(makeRec(p.work * 60, new Date(S.endAt).toISOString(), true));
+    bell();
+    if (p.brk > 0) { S.phase = "break"; S.remaining = p.brk * 60000; S.endAt = S.endAt + S.remaining; S.running = true; S.startedAt = null; }
+    else toIdle();
+  } else { bell(); toIdle(); }
+  persistTimer(); renderControls(); renderTimer();
+}
+function tick() {
+  if (S.running && Date.now() >= S.endAt) phaseDone();
+  renderTimer();
+}
+function restoreTimer() {
+  var o = lsGet(K_TIMER); if (!o || o.uid !== (user && user.id)) return;
+  if (typeof o.sound === "boolean") S.sound = o.sound;
+  if (typeof o.note === "string") $("note").value = o.note;
+  if (o.preset) S.preset = o.preset;
+  if (o.cat) S.cat = o.cat;
+}
+function resumeRunning() {
+  var o = lsGet(K_TIMER); if (!o || o.uid !== (user && user.id)) return;
+  var now = Date.now(), p = P();
+  S.remaining = p.work * 60000;
+  if (o.phase === "work" && o.startedAt) {
+    if (o.running && isFinite(o.endAt)) {
+      if (o.endAt > now) { S.phase = "work"; S.running = true; S.endAt = o.endAt; S.startedAt = o.startedAt; S.remaining = o.endAt - now; }
+      else {
+        var rec = { startedAt: o.startedAt, endedAt: new Date(o.endAt).toISOString(), seconds: p.work * 60, category: S.cat, note: (o.note || "").trim().slice(0, 200), preset: label(p), completed: true };
+        addBanner("recovered", "A " + p.work + " minute session ended at " + tm(rec.endedAt) + " while this page was closed. Save it to your log?", [
+          { label: "Save it", fn: function () { removeBanner("recovered"); saveSession(rec); } },
+          { label: "Discard", fn: function () { removeBanner("recovered"); } }
+        ]);
+      }
+    } else if (isFinite(o.remaining)) {
+      S.phase = "work"; S.running = false; S.remaining = Math.min(Math.max(0, o.remaining), p.work * 60000); S.startedAt = o.startedAt;
+    }
+  } else if (o.phase === "break" && o.running && o.endAt > now) {
+    S.phase = "break"; S.running = true; S.endAt = o.endAt; S.remaining = o.endAt - now;
+  }
+}
+
+/* ---------- derived views ---------- */
+function weekStart(offset) {
+  var d = new Date(); d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7) + 7 * offset);
+  return d;
+}
+function weekSessions(offset) {
+  var ws = weekStart(offset), we = new Date(ws); we.setDate(we.getDate() + 7);
+  return sessions.filter(function (s) { var d = new Date(Date.parse(s.startedAt)); return d >= ws && d < we; });
+}
+function renderWeek() {
+  var ws = weekStart(weekOffset), we = new Date(ws); we.setDate(we.getDate() + 7);
+  var last = new Date(we); last.setDate(last.getDate() - 1);
+  var now = new Date(), todayIdx = (now.getDay() + 6) % 7;
+  var days = [0, 0, 0, 0, 0, 0, 0], cats = {}, todaySecs = 0, todayN = 0;
+  sessions.forEach(function (s) {
+    var d = new Date(Date.parse(s.startedAt)); if (isNaN(d)) return;
+    var secs = s.seconds || 0;
+    if (d >= ws && d < we) { var i = (d.getDay() + 6) % 7; days[i] += secs; cats[s.category || "Other"] = (cats[s.category || "Other"] || 0) + secs; }
+    if (d.toDateString() === now.toDateString()) { todaySecs += secs; todayN++; }
+  });
+  var total = days.reduce(function (a, b) { return a + b; }, 0), goal = settings.goal * 3600;
+  $("weektitle").textContent = weekOffset === 0 ? "This week" : weekOffset === -1 ? "Last week" : "Week of " + ws.toLocaleDateString([], { month: "short", day: "numeric" });
+  $("range").textContent = ws.toLocaleDateString([], { month: "short", day: "numeric" }) + " to " + last.toLocaleDateString([], { month: "short", day: "numeric" });
+  $("nextWeek").disabled = weekOffset >= 0;
+  var wt = $("weektotal"); wt.textContent = hm(total) + " ";
+  var sm = document.createElement("small"); sm.textContent = "of " + hm(goal); wt.appendChild(sm);
+  $("weekbar").style.width = Math.min(100, goal ? total / goal * 100 : 0) + "%";
+  $("weekstatus").textContent = !loaded ? "Loading your sessions." :
+    total >= goal ? "Goal reached. " + hm(total - goal) + " extra." : hm(goal - total) + " to go" + (weekOffset === 0 ? " this week." : ".");
+  var scale = Math.max(Math.max.apply(null, days), 3600);
+  var box = $("days"); box.textContent = "";
+  days.forEach(function (secs, i) {
+    var d = document.createElement("div"); d.className = "day" + (secs ? " has" : "") + (weekOffset === 0 && i === todayIdx ? " today" : "");
+    var v = document.createElement("div"); v.className = "dval"; v.textContent = secs ? hm(secs) : "";
+    var col = document.createElement("div"); col.className = "col"; var bar = document.createElement("div"); bar.style.height = Math.max(3, secs / scale * 84) + "px"; col.appendChild(bar);
+    var n = document.createElement("div"); n.className = "dname"; n.textContent = DAY_NAMES[i];
+    d.appendChild(v); d.appendChild(col); d.appendChild(n); box.appendChild(d);
+  });
+  var names = Object.keys(cats).sort(function (a, b) { return cats[b] - cats[a]; });
+  $("weekcats").textContent = names.length ? names.map(function (k) { return k + " " + hm(cats[k]); }).join("  |  ") : "";
+  $("today").textContent = todayN ? "Today: " + todayN + " session" + (todayN > 1 ? "s" : "") + ", " + hm(todaySecs) : "Today: no sessions yet";
+}
+
+function renderHistory() {
+  var box = $("list"); box.textContent = "";
+  $("count").textContent = sessions.length ? sessions.length + " saved" : "";
+  $("more").hidden = sessions.length <= showCount;
+  if (!sessions.length) {
+    var e = document.createElement("p"); e.className = "empty";
+    e.textContent = loaded ? "No sessions yet. Pick a preset, choose a category, and press Start. Finished sessions show up here with their start and end times." : "Loading your sessions.";
+    box.appendChild(e); return;
+  }
+  var totals = {};
+  sessions.forEach(function (s) { var d = new Date(Date.parse(s.startedAt)); if (isNaN(d)) return; var k = d.toDateString(); totals[k] = (totals[k] || 0) + (s.seconds || 0); });
+  var curKey = null;
+  sessions.slice(0, showCount).forEach(function (s) {
+    var d = new Date(Date.parse(s.startedAt)); if (isNaN(d)) return;
+    var k = d.toDateString();
+    if (k !== curKey) {
+      curKey = k;
+      var h = document.createElement("div"); h.className = "dayhead";
+      var a = document.createElement("span"); a.textContent = dayLabel(d);
+      var b = document.createElement("span"); b.textContent = hm(totals[k]);
+      h.appendChild(a); h.appendChild(b); box.appendChild(h);
+    }
+    var r = document.createElement("div"); r.className = "row";
+    var t = document.createElement("div"); t.className = "t"; t.textContent = tm(s.startedAt) + " to " + tm(s.endedAt);
+    var du = document.createElement("div"); du.className = "d"; du.appendChild(document.createTextNode(dur(s.seconds || 0)));
+    if (s.completed === false) { var em = document.createElement("em"); em.textContent = " (stopped early)"; du.appendChild(em); }
+    var tag = document.createElement("div"); tag.className = "tag"; tag.textContent = s.category || "";
+    var n = document.createElement("div"); n.className = "n"; n.textContent = s.note || "";
+    var del = document.createElement("button"); del.type = "button"; del.className = "del" + (armed === s.id ? " armed" : "");
+    del.textContent = armed === s.id ? "Tap to delete" : "Delete";
+    del.addEventListener("click", function () { onDelete(s.id); });
+    r.appendChild(t); r.appendChild(du); r.appendChild(tag); r.appendChild(n); r.appendChild(del);
+    box.appendChild(r);
+  });
+}
+function onDelete(id) {
+  if (armed !== id) {
+    armed = id; clearTimeout(armTimer); armTimer = setTimeout(function () { armed = null; renderHistory(); }, 4000);
+    renderHistory(); return;
+  }
+  armed = null; clearTimeout(armTimer);
+  deleteSession(id);
+}
+function renderAll() { renderWeek(); renderHistory(); }
+
+/* ---------- timer choices + settings UI ---------- */
+function buildTimerChoices() {
+  if (!settings.cats.length) settings.cats = clone(DEFAULTS.cats);
+  if (settings.cats.indexOf(S.cat) < 0) S.cat = settings.cats[0];
+  var labels = settings.presets.map(label);
+  if (labels.indexOf(S.preset) < 0) { S.preset = labels[0]; if (S.phase === "idle") S.remaining = P().work * 60000; }
+
+  var pb = $("presets"); pb.textContent = "";
+  settings.presets.forEach(function (p, i) {
+    var inp = document.createElement("input"); inp.type = "radio"; inp.name = "preset"; inp.id = "pr" + i; inp.value = label(p);
+    var lab = document.createElement("label"); lab.htmlFor = "pr" + i; lab.textContent = label(p);
+    inp.addEventListener("change", function () {
+      if (S.phase !== "idle") { renderControls(); return; }
+      S.preset = inp.value; S.remaining = P().work * 60000; persistTimer(); renderTimer();
+    });
+    pb.appendChild(inp); pb.appendChild(lab);
+  });
+
+  var cb = $("cats"); cb.textContent = "";
+  settings.cats.forEach(function (c, i) {
+    var inp = document.createElement("input"); inp.type = "radio"; inp.name = "cat"; inp.id = "cat" + i; inp.value = c; inp.checked = (c === S.cat);
+    var lab = document.createElement("label"); lab.htmlFor = "cat" + i; lab.textContent = c;
+    inp.addEventListener("change", function () { S.cat = c; persistTimer(); });
+    cb.appendChild(inp); cb.appendChild(lab);
+  });
+
+  var mc = $("mCat"); mc.textContent = "";
+  settings.cats.forEach(function (c) { var o = document.createElement("option"); o.value = c; o.textContent = c; mc.appendChild(o); });
+  renderControls();
+}
+function chip(text, onRemove, canRemove) {
+  var s = document.createElement("span"); s.className = "tag-chip"; s.appendChild(document.createTextNode(text));
+  if (canRemove) {
+    var b = document.createElement("button"); b.type = "button"; b.setAttribute("aria-label", "Remove " + text); b.textContent = "×"; b.addEventListener("click", onRemove); s.appendChild(b);
+  }
+  return s;
+}
+function buildSettings() {
+  if (document.activeElement !== $("goal")) $("goal").value = settings.goal;
+  var ct = $("catTags"); ct.textContent = "";
+  settings.cats.forEach(function (c, i) {
+    ct.appendChild(chip(c, function () { settings.cats.splice(i, 1); afterSettingsChange(); }, settings.cats.length > 1));
+  });
+  var pt = $("presetTags"); pt.textContent = "";
+  settings.presets.forEach(function (p, i) {
+    pt.appendChild(chip(label(p) + " min", function () { settings.presets.splice(i, 1); afterSettingsChange(); }, settings.presets.length > 1));
+  });
+}
+function afterSettingsChange() {
+  buildSettings(); buildTimerChoices(); renderAll(); renderTimer(); saveSettings();
+}
+
+/* ---------- CSV ---------- */
+function csvCell(v) {
+  var s = String(v == null ? "" : v);
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function exportCsv(list, name) {
+  if (!list.length) { toast("Nothing to export for that range."); return; }
+  var rows = [["Date", "Start", "End", "Minutes", "Category", "Preset", "Note", "Finished"]];
+  list.slice().sort(function (a, b) { return Date.parse(a.startedAt) - Date.parse(b.startedAt); }).forEach(function (s) {
+    var a = new Date(Date.parse(s.startedAt)), b = new Date(Date.parse(s.endedAt));
+    rows.push([ymd(a), pad(a.getHours()) + ":" + pad(a.getMinutes()), pad(b.getHours()) + ":" + pad(b.getMinutes()), Math.round(s.seconds / 6) / 10, s.category, s.preset, s.note, s.completed === false ? "no" : "yes"]);
+  });
+  var text = "﻿" + rows.map(function (r) { return r.map(csvCell).join(","); }).join("\r\n");
+  var url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" }));
+  var a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+  toast("Exported " + list.length + " session" + (list.length > 1 ? "s" : ""));
+}
+
+/* ---------- buildAll + wiring ---------- */
+function buildAll() {
+  buildSettings(); buildTimerChoices(); resumeRunning();
+  $("sound").checked = S.sound;
+  var now = new Date();
+  if (!$("mDate").value) $("mDate").value = ymd(now);
+  renderControls(); renderTimer(); renderAll();
+  if (!tickHandle) tickHandle = setInterval(tick, 250);
+}
+
+function wire() {
+  $("emailForm").addEventListener("submit", sendLink);
+  $("codeForm").addEventListener("submit", verifyCode);
+  $("signout").addEventListener("click", signOut);
+  $("sound").addEventListener("change", function () { S.sound = this.checked; persistTimer(); if (S.sound) ensureAudio(); });
+  $("note").addEventListener("input", persistTimer);
+  $("main").addEventListener("click", mainClick);
+  $("stop").addEventListener("click", stopSave);
+  $("discard").addEventListener("click", discardClick);
+  $("prevWeek").addEventListener("click", function () { weekOffset--; renderWeek(); });
+  $("nextWeek").addEventListener("click", function () { if (weekOffset < 0) { weekOffset++; renderWeek(); } });
+  $("more").addEventListener("click", function () { showCount += 60; renderHistory(); });
+  $("exportWeek").addEventListener("click", function () {
+    var ws = weekStart(weekOffset);
+    exportCsv(weekSessions(weekOffset), "focus-log-week-" + ymd(ws) + ".csv");
+  });
+  $("exportAll").addEventListener("click", function () { exportCsv(sessions, "focus-log-all-" + ymd(new Date()) + ".csv"); });
+
+  $("goal").addEventListener("change", function () {
+    var v = parseFloat(this.value);
+    if (!(v > 0) || v > 100) { this.value = settings.goal; return; }
+    if (v === settings.goal) return;
+    settings.goal = v; renderWeek(); saveSettings();
+  });
+  $("addCat").addEventListener("click", function () {
+    var v = $("newCat").value.trim().slice(0, 24);
+    if (!v) return;
+    if (settings.cats.some(function (c) { return c.toLowerCase() === v.toLowerCase(); })) { toast("That category already exists."); return; }
+    settings.cats.push(v); $("newCat").value = ""; afterSettingsChange();
+  });
+  $("newCat").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); $("addCat").click(); } });
+  $("addPreset").addEventListener("click", function () {
+    var w = parseInt($("newWork").value, 10), b = parseInt($("newBreak").value, 10);
+    if (!(w >= 1 && w <= 180) || !(b >= 0 && b <= 60)) { toast("Work 1 to 180 minutes, break 0 to 60."); return; }
+    if (settings.presets.some(function (p) { return p.work === w && p.brk === b; })) { toast("That preset already exists."); return; }
+    settings.presets.push({ work: w, brk: b }); $("newWork").value = ""; $("newBreak").value = ""; afterSettingsChange();
+  });
+
+  $("manualForm").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var d = $("mDate").value, t = $("mTime").value, m = parseInt($("mMin").value, 10);
+    if (!d || !t || !(m >= 1 && m <= 720)) { toast("Fill in date, start time and minutes."); return; }
+    var start = new Date(d + "T" + t);
+    if (isNaN(start)) { toast("That date or time isn't valid."); return; }
+    var end = new Date(start.getTime() + m * 60000);
+    saveSession({ startedAt: start.toISOString(), endedAt: end.toISOString(), seconds: m * 60, category: $("mCat").value, note: $("mNote").value.trim().slice(0, 200), preset: "manual", completed: true });
+    $("mMin").value = ""; $("mNote").value = "";
+  });
+
+  document.addEventListener("visibilitychange", function () { if (!document.hidden && appStarted) tick(); });
+  window.addEventListener("online", function () { if (appStarted) { removeBanner("offline"); flushPending(); } });
+}
+
+wire();
+initAuth();
+})();

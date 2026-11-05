@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Focus Log</title>
+<meta name="theme-color" content="#1E6B58">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=DM+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600&display=swap">
+<style>
+:root{
+  --bg:#EDF0EE; --surface:#F7F9F8; --line:#D3DAD6; --track:#DDE4E0;
+  --ink:#16211D; --muted:#566660;
+  --accent:#1E6B58; --accent-ink:#F4FBF8;
+  --break:#A8650E; --danger:#A33A2C;
+  --f-display:'Bricolage Grotesque',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --f-body:'Instrument Sans',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --f-mono:'DM Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0E1412; --surface:#151D1A; --line:#26322E; --track:#202B27;
+    --ink:#E5EEEA; --muted:#8FA09A;
+    --accent:#4FC3A1; --accent-ink:#06201A;
+    --break:#E2A24B; --danger:#E5877A;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0E1412; --surface:#151D1A; --line:#26322E; --track:#202B27;
+  --ink:#E5EEEA; --muted:#8FA09A;
+  --accent:#4FC3A1; --accent-ink:#06201A;
+  --break:#E2A24B; --danger:#E5877A;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none !important}
+body{
+  margin:0; background:var(--bg); color:var(--ink); font-family:var(--f-body); font-size:15px; line-height:1.45;
+  padding-block:24px 48px;
+  padding-left:max(16px, env(safe-area-inset-left, 0px));
+  padding-right:max(16px, env(safe-area-inset-right, 0px));
+  min-height:100vh;
+}
+.app{max-width:980px; margin:0 auto; display:flex; flex-direction:column; gap:16px}
+h1,h2{font-family:var(--f-display); margin:0; letter-spacing:-0.01em; text-wrap:balance}
+h1{font-size:30px; line-height:1.1}
+h2{font-size:18px}
+.sub{margin:4px 0 0; color:var(--muted)}
+.top{display:flex; flex-wrap:wrap; justify-content:space-between; align-items:flex-end; gap:8px 16px}
+.topright{display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; color:var(--muted); font-size:14px}
+.sound{display:flex; align-items:center; gap:8px}
+.sound input{accent-color:var(--accent); width:16px; height:16px}
+.who{overflow-wrap:anywhere}
+
+#banners{display:flex; flex-direction:column; gap:8px}
+.banner{display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:10px 14px; border-radius:10px; background:var(--surface); border:1px solid var(--break); color:var(--ink)}
+.banner span{flex:1 1 220px; min-width:0}
+
+.grid{display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,1fr); gap:16px}
+@media (max-width:760px){.grid{grid-template-columns:minmax(0,1fr)}}
+.card{background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:20px; min-width:0}
+
+.btn,.small{font:inherit; font-weight:600; border:1px solid var(--line); background:var(--bg); color:var(--ink); cursor:pointer}
+.btn{min-height:46px; padding:0 22px; border-radius:11px}
+.btn.primary{background:var(--accent); color:var(--accent-ink); border-color:var(--accent); min-width:140px}
+.btn.ghost{border-color:transparent; color:var(--muted)}
+.small{padding:6px 12px; border-radius:8px; font-size:14px}
+.small.link{border-color:transparent; background:none; color:var(--muted); font-weight:500}
+button:disabled{opacity:.5; cursor:not-allowed}
+.btn:focus-visible,.small:focus-visible,.del:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+input[type=text],input[type=email],input[type=number],input[type=date],input[type=time],select{
+  font:inherit; color:var(--ink); background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:9px 12px; min-width:0}
+
+/* Timer */
+.timer{display:flex; flex-direction:column; align-items:center; gap:18px}
+.timer[data-phase="work"],.timer[data-phase="idle"]{--phase:var(--accent)}
+.timer[data-phase="break"]{--phase:var(--break)}
+.seg{position:relative; display:flex; flex-wrap:wrap; justify-content:center; gap:4px; padding:4px; background:var(--track); border-radius:12px}
+.seg input{position:absolute; opacity:0; pointer-events:none}
+.seg label{padding:8px 16px; border-radius:9px; cursor:pointer; font-family:var(--f-mono); font-size:15px; text-align:center}
+.seg input:checked+label{background:var(--surface); box-shadow:0 0 0 1px var(--line)}
+.seg input:focus-visible+label{outline:2px solid var(--accent); outline-offset:2px}
+.seg input:disabled+label{cursor:not-allowed; opacity:.6}
+.ringwrap{position:relative; width:min(100%,280px); aspect-ratio:1}
+.ringwrap svg{width:100%; height:100%; display:block; transform:rotate(-90deg)}
+.ring-track{fill:none; stroke:var(--track); stroke-width:10}
+.ring-prog{fill:none; stroke:var(--phase); stroke-width:10; stroke-linecap:round}
+.readout{position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px}
+#clock{font-family:var(--f-mono); font-weight:500; font-size:clamp(44px,13vw,60px); letter-spacing:-0.02em; font-variant-numeric:tabular-nums}
+#phase{font-size:13px; letter-spacing:.12em; text-transform:uppercase; color:var(--phase); font-weight:600}
+.fields{width:100%; display:flex; flex-direction:column; gap:10px}
+.chips{position:relative; display:flex; flex-wrap:wrap; gap:6px}
+.chips input{position:absolute; opacity:0; pointer-events:none}
+.chips label{padding:6px 14px; border-radius:999px; border:1px solid var(--line); cursor:pointer; font-size:14px; background:var(--bg)}
+.chips input:checked+label{background:var(--ink); color:var(--bg); border-color:var(--ink)}
+.chips input:focus-visible+label{outline:2px solid var(--accent); outline-offset:2px}
+#note{width:100%}
+.controls{display:flex; flex-wrap:wrap; gap:8px; justify-content:center; width:100%}
+.timer[data-phase="break"] .btn.primary{background:var(--break); border-color:var(--break); color:var(--bg)}
+.today{margin:0; color:var(--muted); font-size:14px}
+
+/* Week */
+.week{display:flex; flex-direction:column; gap:14px}
+.weekhead{display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap}
+.nav{display:flex; align-items:center; gap:6px}
+.range{color:var(--muted); font-size:14px; min-width:120px; text-align:center}
+.big{font-family:var(--f-mono); font-size:34px; font-weight:500; letter-spacing:-0.02em; font-variant-numeric:tabular-nums}
+.big small{font-size:15px; color:var(--muted); font-weight:400; letter-spacing:0}
+.bar{height:12px; border-radius:999px; background:var(--track); overflow:hidden}
+.bar>div{height:100%; width:0; background:var(--accent); border-radius:999px; transition:width .3s}
+.status{margin:0; color:var(--muted)}
+.days{display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:6px; align-items:end}
+.day{display:flex; flex-direction:column; align-items:center; gap:4px; min-width:0}
+.col{height:84px; width:100%; display:flex; align-items:flex-end}
+.col div{width:100%; border-radius:6px 6px 2px 2px; background:var(--track); min-height:3px}
+.day.has .col div{background:var(--accent)}
+.day.today .dname{color:var(--ink); font-weight:600}
+.dname{font-size:12px; color:var(--muted)}
+.dval{font-family:var(--f-mono); font-size:11px; color:var(--muted); height:14px}
+.cats{margin:0; color:var(--muted); font-size:14px}
+.weekfoot{display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; border-top:1px solid var(--line); padding-top:12px}
+
+/* History */
+.hhead{display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap}
+.dayhead{display:flex; justify-content:space-between; gap:8px; padding:14px 0 6px; font-weight:600; border-bottom:1px solid var(--line)}
+.dayhead span:last-child{font-family:var(--f-mono); font-weight:400; color:var(--muted); font-size:14px}
+.row{display:grid; grid-template-columns:150px 120px 90px minmax(0,1fr) auto; gap:4px 12px; align-items:center; padding:9px 0; border-bottom:1px solid var(--line)}
+.row .t{font-family:var(--f-mono); font-size:13px; color:var(--muted)}
+.row .d{font-variant-numeric:tabular-nums}
+.row .d em{font-style:normal; color:var(--muted); font-size:13px}
+.row .tag{font-size:13px; color:var(--muted)}
+.row .n{min-width:0; overflow-wrap:anywhere}
+.del{font:inherit; font-size:13px; background:none; border:1px solid transparent; color:var(--muted); padding:4px 8px; border-radius:8px; cursor:pointer}
+.del.armed{color:var(--danger); border-color:var(--danger)}
+@media (max-width:760px){
+  .row{grid-template-columns:minmax(0,1fr) auto}
+  .row .t{grid-column:1 / 3}
+  .row .n{grid-column:1 / 3; order:5}
+}
+.empty{padding:24px 0; color:var(--muted); max-width:52ch; margin:0}
+
+/* Details panels */
+details.card summary{cursor:pointer; font-family:var(--f-display); font-weight:600; font-size:18px}
+details.card[open] summary{margin-bottom:14px}
+.form{display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end}
+.form label.f{display:flex; flex-direction:column; gap:4px; font-size:13px; color:var(--muted)}
+.form label.f.grow{flex:1 1 200px}
+.set h3{font-size:14px; margin:18px 0 8px; color:var(--muted); font-weight:600; letter-spacing:.04em; text-transform:uppercase}
+.set h3:first-child{margin-top:0}
+.tags{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px}
+.tag-chip{display:inline-flex; align-items:center; gap:6px; padding:4px 6px 4px 12px; border:1px solid var(--line); border-radius:999px; background:var(--bg); font-size:14px}
+.tag-chip button{font:inherit; border:0; background:none; color:var(--muted); cursor:pointer; padding:0 6px; font-size:16px; line-height:1}
+.inline{display:flex; flex-wrap:wrap; gap:8px; align-items:center}
+.inline input[type=number]{width:84px}
+
+/* Login */
+.login{max-width:440px; margin:8vh auto 0; display:flex; flex-direction:column; gap:14px}
+.login form{display:flex; flex-direction:column; gap:10px}
+.login .msg{margin:0; color:var(--muted)}
+.login .err{color:var(--danger)}
+.codewrap{display:flex; flex-direction:column; gap:10px; border-top:1px solid var(--line); padding-top:14px}
+code{font-family:var(--f-mono); font-size:13px; background:var(--bg); padding:2px 6px; border-radius:6px}
+
+#toast{position:fixed; left:50%; transform:translateX(-50%); bottom:max(16px, env(safe-area-inset-bottom, 0px)); background:var(--ink); color:var(--bg); padding:10px 16px; border-radius:10px; font-weight:500; opacity:0; pointer-events:none; transition:opacity .2s; z-index:20; max-width:calc(100% - 32px)}
+#toast.show{opacity:1}
+@media (prefers-reduced-motion: reduce){.bar>div,#toast{transition:none}}
+</style>
+</head>
+<body>
+
+<!-- Setup missing -->
+<main class="app" id="setupView" hidden>
+  <section class="card login">
+    <h1>Focus Log</h1>
+    <p class="msg">Almost there. Open <code>config.js</code> and paste your Supabase project URL and anon key, then reload. The README has the steps.</p>
+  </section>
+</main>
+
+<!-- Sign in -->
+<main class="app" id="loginView" hidden>
+  <section class="card login">
+    <h1>Focus Log</h1>
+    <p class="msg">Sign in with your email. You get a link, and the same email also carries a 6 digit code you can type here (handy on an installed app).</p>
+    <form id="emailForm">
+      <input type="email" id="email" required autocomplete="email" placeholder="you@example.com" aria-label="Email">
+      <button class="btn primary" id="sendBtn" type="submit">Email me a sign-in link</button>
+    </form>
+    <div class="codewrap" id="codeWrap" hidden>
+      <p class="msg" id="sentMsg"></p>
+      <form id="codeForm">
+        <input type="text" id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="6 digit code" aria-label="Sign-in code">
+        <button class="btn" id="codeBtn" type="submit">Verify code</button>
+      </form>
+    </div>
+    <p class="msg err" id="loginErr" role="alert"></p>
+  </section>
+</main>
+
+<!-- App -->
+<main class="app" id="appView" hidden>
+  <header class="top">
+    <div>
+      <h1>Focus Log</h1>
+      <p class="sub">Pomodoro timer. Every session is saved with its start and end time.</p>
+    </div>
+    <div class="topright">
+      <label class="sound"><input type="checkbox" id="sound" checked> Sound</label>
+      <span class="who" id="who"></span>
+      <button class="small link" id="signout" type="button">Sign out</button>
+    </div>
+  </header>
+
+  <div id="banners"></div>
+
+  <div class="grid">
+    <section class="card timer" id="timer" data-phase="idle" aria-label="Timer">
+      <div class="seg" role="radiogroup" aria-label="Preset" id="presets"></div>
+
+      <div class="ringwrap">
+        <svg viewBox="0 0 240 240" aria-hidden="true">
+          <circle class="ring-track" cx="120" cy="120" r="108"></circle>
+          <circle class="ring-prog" id="ring" cx="120" cy="120" r="108"></circle>
+        </svg>
+        <div class="readout" role="timer" aria-live="off">
+          <div id="clock">25:00</div>
+          <div id="phase">Ready</div>
+        </div>
+      </div>
+
+      <div class="fields">
+        <div class="chips" role="radiogroup" aria-label="Category" id="cats"></div>
+        <input id="note" type="text" maxlength="200" placeholder="What are you working on? (optional)" aria-label="What are you working on">
+      </div>
+
+      <div class="controls">
+        <button class="btn primary" id="main" type="button">Start</button>
+        <button class="btn" id="stop" type="button" hidden>Stop &amp; save</button>
+        <button class="btn ghost" id="discard" type="button" hidden>Discard</button>
+      </div>
+      <p class="today" id="today">Today: no sessions yet</p>
+    </section>
+
+    <section class="card week" aria-label="Weekly progress">
+      <div class="weekhead">
+        <h2 id="weektitle">This week</h2>
+        <div class="nav">
+          <button class="small" id="prevWeek" type="button" aria-label="Previous week">&larr;</button>
+          <span class="range" id="range"></span>
+          <button class="small" id="nextWeek" type="button" aria-label="Next week">&rarr;</button>
+        </div>
+      </div>
+      <div class="big" id="weektotal">0m <small>of 3h 30m</small></div>
+      <div class="bar" aria-hidden="true"><div id="weekbar"></div></div>
+      <p class="status" id="weekstatus">Loading your sessions.</p>
+      <div class="days" id="days"></div>
+      <p class="cats" id="weekcats"></p>
+      <div class="weekfoot">
+        <span class="range" style="text-align:left">Monday to Sunday</span>
+        <button class="small" id="exportWeek" type="button">Export this week (CSV)</button>
+      </div>
+    </section>
+  </div>
+
+  <section class="card" aria-label="Session history">
+    <div class="hhead"><h2>Sessions</h2><span class="range" id="count"></span></div>
+    <div id="list"></div>
+    <button class="small" id="more" type="button" hidden style="margin-top:12px">Show more</button>
+  </section>
+
+  <details class="card" id="manual">
+    <summary>Add a session I forgot to time</summary>
+    <form class="form" id="manualForm">
+      <label class="f">Date<input type="date" id="mDate" required></label>
+      <label class="f">Start<input type="time" id="mTime" required></label>
+      <label class="f">Minutes<input type="number" id="mMin" min="1" max="720" step="1" required style="width:96px"></label>
+      <label class="f">Category<select id="mCat"></select></label>
+      <label class="f grow">Note<input type="text" id="mNote" maxlength="200" placeholder="Optional"></label>
+      <button class="btn" type="submit">Add session</button>
+    </form>
+  </details>
+
+  <details class="card set" id="settingsBox">
+    <summary>Settings</summary>
+    <h3>Weekly goal</h3>
+    <div class="inline"><input type="number" id="goal" min="0.5" max="100" step="0.5" aria-label="Weekly goal in hours"><span class="range">hours per week</span></div>
+
+    <h3>Categories</h3>
+    <div class="tags" id="catTags"></div>
+    <div class="inline"><input type="text" id="newCat" maxlength="24" placeholder="New category" aria-label="New category"><button class="small" id="addCat" type="button">Add</button></div>
+
+    <h3>Timer presets</h3>
+    <div class="tags" id="presetTags"></div>
+    <div class="inline">
+      <input type="number" id="newWork" min="1" max="180" placeholder="Work" aria-label="Work minutes">
+      <input type="number" id="newBreak" min="0" max="60" placeholder="Break" aria-label="Break minutes">
+      <button class="small" id="addPreset" type="button">Add</button>
+    </div>
+
+    <h3>Export</h3>
+    <div class="inline"><button class="small" id="exportAll" type="button">Export all sessions (CSV)</button></div>
+  </details>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+<script>
+if("serviceWorker" in navigator){
+  window.addEventListener("load",function(){navigator.serviceWorker.register("sw.js").catch(function(){})});
+}
+</script>
+</body>
+</html>
