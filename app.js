@@ -240,7 +240,7 @@ function fetchRemote() {
   ]).then(function (res) {
     clearTimeout(slow); removeBanner("slow");
     var a = res[0], b = res[1];
-    if (a.error) { addBanner("loaderr", "Couldn't load sessions (" + a.error.message + "). Showing saved copy.", [{ label: "Retry", fn: function () { removeBanner("loaderr"); fetchRemote(); } }]); loaded = true; renderAll(); return; }
+    if (a.error) { addBanner("loaderr", "Couldn't load sessions (" + a.error.message + "). Showing saved copy.", [{ label: "Retry", fn: function () { removeBanner("loaderr"); fetchRemote(); } }]); loaded = true; renderAll(); saveRecovered(); return; }
     removeBanner("loaderr");
     var remote = a.data.map(rowToSession);
     var ids = {}; remote.forEach(function (s) { ids[s.id] = 1; });
@@ -250,10 +250,10 @@ function fetchRemote() {
       mergeSettings({ goal: Number(b.data.goal_hours), dmin: Number(b.data.daily_min_minutes), dideal: Number(b.data.daily_ideal_hours), cats: b.data.categories, presets: b.data.presets });
       buildSettings(); buildTimerChoices();
     }
-    loaded = true; cacheNow(); renderAll(); renderTimer(); flushPending();
+    loaded = true; cacheNow(); renderAll(); renderTimer(); flushPending(); saveRecovered();
   }).catch(function () {
     clearTimeout(slow); removeBanner("slow"); loaded = true;
-    addBanner("offline", "Offline. Showing your saved copy.", []); renderAll();
+    addBanner("offline", "Offline. Showing your saved copy.", []); renderAll(); saveRecovered();
   });
 }
 
@@ -291,11 +291,20 @@ function saveSettings() {
   }).catch(function () { toast("Settings saved on this device only for now."); });
 }
 
+function saveRecovered() {
+  if (!pendingRecovery) return;
+  var rec = pendingRecovery; pendingRecovery = null;
+  if (sessions.some(function (s) { return s.startedAt === rec.startedAt; })) return;
+  saveSession(rec);
+  addBanner("recovered", "Saved a " + dur(rec.seconds) + " session that finished at " + tm(rec.endedAt) + " while the app was closed.", [{ label: "OK", fn: function () { removeBanner("recovered"); } }]);
+}
+
 /* ---------- timer ---------- */
 function persistTimer() {
-  lsSet(K_TIMER, { uid: user && user.id, phase: S.phase, preset: S.preset, running: S.running, endAt: S.endAt, remaining: S.remaining, startedAt: S.startedAt, cat: S.cat, sound: S.sound, note: $("note").value });
+  lsSet(K_TIMER, { uid: user && user.id, phase: S.phase, preset: S.preset, running: S.running, endAt: S.endAt, remaining: S.remaining, startedAt: S.startedAt, pausedAt: S.pausedAt || null, cat: S.cat, sound: S.sound, note: $("note").value });
 }
-function toIdle() { S.phase = "idle"; S.running = false; S.remaining = P().work * 60000; S.startedAt = null; }
+var AUTO_STOP_MS = 15 * 60000, pendingRecovery = null;
+function toIdle() { S.phase = "idle"; S.running = false; S.remaining = P().work * 60000; S.startedAt = null; S.pausedAt = null; }
 
 function renderTimer() {
   var rem = S.running ? Math.max(0, S.endAt - Date.now()) : S.remaining;
@@ -326,17 +335,20 @@ function mainClick() {
     S.running = true; S.endAt = Date.now() + S.remaining;
   } else if (S.phase === "work") {
     ensureAudio();
-    if (S.running) { S.remaining = Math.max(0, S.endAt - Date.now()); S.running = false; }
-    else { S.running = true; S.endAt = Date.now() + S.remaining; }
+    if (S.running) { S.remaining = Math.max(0, S.endAt - Date.now()); S.running = false; S.pausedAt = Date.now(); }
+    else { S.running = true; S.endAt = Date.now() + S.remaining; S.pausedAt = null; }
   } else { toIdle(); }
   persistTimer(); renderControls(); renderTimer();
 }
-function stopSave() {
+function stopSave(endISO, auto) {
   if (S.phase !== "work") return;
   var rem = S.running ? Math.max(0, S.endAt - Date.now()) : S.remaining;
   var workMs = P().work * 60000 - rem;
-  if (workMs >= 60000) saveSession(makeRec(Math.round(workMs / 1000), new Date().toISOString(), false));
-  else toast("Under 1 minute, so nothing was saved.");
+  var end = typeof endISO === "string" ? endISO : new Date().toISOString();
+  if (workMs >= 60000) {
+    saveSession(makeRec(Math.round(workMs / 1000), end, false));
+    if (auto) addBanner("autostop", "You were paused for 15 minutes, so your " + dur(workMs / 1000) + " session was saved and the timer stopped.", [{ label: "OK", fn: function () { removeBanner("autostop"); } }]);
+  } else if (!auto) toast("Under 1 minute, so nothing was saved.");
   toIdle(); persistTimer(); renderControls(); renderTimer();
 }
 function discardClick() {
@@ -360,6 +372,7 @@ function phaseDone() {
 }
 function tick() {
   if (S.running && Date.now() >= S.endAt) phaseDone();
+  else if (S.phase === "work" && !S.running && S.pausedAt && Date.now() - S.pausedAt >= AUTO_STOP_MS) stopSave(new Date(S.pausedAt).toISOString(), true);
   renderTimer();
 }
 function restoreTimer() {
@@ -378,13 +391,11 @@ function resumeRunning() {
       if (o.endAt > now) { S.phase = "work"; S.running = true; S.endAt = o.endAt; S.startedAt = o.startedAt; S.remaining = o.endAt - now; }
       else {
         var rec = { startedAt: o.startedAt, endedAt: new Date(o.endAt).toISOString(), seconds: p.work * 60, category: S.cat, note: (o.note || "").trim().slice(0, 200), preset: label(p), completed: true };
-        addBanner("recovered", "A " + p.work + " minute session ended at " + tm(rec.endedAt) + " while this page was closed. Save it to your log?", [
-          { label: "Save it", fn: function () { removeBanner("recovered"); saveSession(rec); } },
-          { label: "Discard", fn: function () { removeBanner("recovered"); } }
-        ]);
+        pendingRecovery = rec;
+        toIdle(); persistTimer();
       }
     } else if (isFinite(o.remaining)) {
-      S.phase = "work"; S.running = false; S.remaining = Math.min(Math.max(0, o.remaining), p.work * 60000); S.startedAt = o.startedAt;
+      S.phase = "work"; S.running = false; S.remaining = Math.min(Math.max(0, o.remaining), p.work * 60000); S.startedAt = o.startedAt; S.pausedAt = o.pausedAt || Date.now();
     }
   } else if (o.phase === "break" && o.running && o.endAt > now) {
     S.phase = "break"; S.running = true; S.endAt = o.endAt; S.remaining = o.endAt - now;
