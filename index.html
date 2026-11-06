@@ -153,10 +153,15 @@ input[type=text],input[type=email],input[type=number],input[type=date],input[typ
 .del{font:inherit; font-size:13px; background:none; border:1px solid transparent; color:var(--muted); padding:4px 8px; border-radius:8px; cursor:pointer}
 .del.armed{color:var(--danger); border-color:var(--danger)}
 @media (max-width:760px){
-  .row{grid-template-columns:minmax(0,1fr) auto}
-  .row .t{grid-column:1 / 3}
-  .row .n{grid-column:1 / 3; order:5}
+  .row{grid-template-columns:minmax(0,1fr) auto; grid-template-areas:"t del" "d tag" "n n"}
+  .row .t{grid-area:t}
+  .row .del{grid-area:del; justify-self:end}
+  .row .d{grid-area:d}
+  .row .tag{grid-area:tag; justify-self:end}
+  .row .n{grid-area:n; color:var(--muted); font-size:14px}
+  .row .n:empty{display:none}
 }
+.hint{margin:-8px 0 14px; color:var(--muted); font-size:14px}
 .empty{padding:24px 0; color:var(--muted); max-width:52ch; margin:0}
 
 /* Details panels */
@@ -295,7 +300,8 @@ code{font-family:var(--f-mono); font-size:13px; background:var(--bg); padding:2p
   </section>
 
   <details class="card" id="manual">
-    <summary>Add a session I forgot to time</summary>
+    <summary>Add past session</summary>
+    <p class="hint">For work you did without the timer.</p>
     <form class="form" id="manualForm">
       <label class="f">Date<input type="date" id="mDate" required></label>
       <label class="f">Start<input type="time" id="mTime" required></label>
