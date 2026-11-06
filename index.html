@@ -16,7 +16,7 @@
   --bg:#EDF0EE; --surface:#F7F9F8; --line:#D3DAD6; --track:#DDE4E0;
   --ink:#16211D; --muted:#566660;
   --accent:#1E6B58; --accent-ink:#F4FBF8;
-  --break:#A8650E; --danger:#A33A2C;
+  --break:#A8650E; --danger:#B8402F; --deep:#0E4436;
   --f-display:'Bricolage Grotesque',system-ui,-apple-system,'Segoe UI',sans-serif;
   --f-body:'Instrument Sans',system-ui,-apple-system,'Segoe UI',sans-serif;
   --f-mono:'DM Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
@@ -26,7 +26,7 @@
     --bg:#0E1412; --surface:#151D1A; --line:#26322E; --track:#202B27;
     --ink:#E5EEEA; --muted:#8FA09A;
     --accent:#4FC3A1; --accent-ink:#06201A;
-    --break:#E2A24B; --danger:#E5877A;
+    --break:#E2A24B; --danger:#E5877A; --deep:#A7F0D9;
     color-scheme:dark;
   }
 }
@@ -34,7 +34,7 @@
   --bg:#0E1412; --surface:#151D1A; --line:#26322E; --track:#202B27;
   --ink:#E5EEEA; --muted:#8FA09A;
   --accent:#4FC3A1; --accent-ink:#06201A;
-  --break:#E2A24B; --danger:#E5877A;
+  --break:#E2A24B; --danger:#E5877A; --deep:#A7F0D9;
   color-scheme:dark;
 }
 *{box-sizing:border-box}
@@ -118,7 +118,22 @@ input[type=text],input[type=email],input[type=number],input[type=date],input[typ
 .day{display:flex; flex-direction:column; align-items:center; gap:4px; min-width:0}
 .col{height:84px; width:100%; display:flex; align-items:flex-end}
 .col div{width:100%; border-radius:6px 6px 2px 2px; background:var(--track); min-height:3px}
-.day.has .col div{background:var(--accent)}
+.day.hit .col div{background:var(--accent)}
+.day.ideal .col div{background:var(--deep)}
+.day.miss .col div{background:var(--danger)}
+.day.miss .dval{color:var(--danger)}
+.day.part .col div{background:var(--accent); opacity:.45}
+.legend{display:flex; flex-wrap:wrap; gap:4px 14px; margin:0; color:var(--muted); font-size:12px}
+.legend i{display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; vertical-align:baseline}
+.daily{width:100%; display:flex; flex-direction:column; gap:8px; border-top:1px solid var(--line); padding-top:14px}
+.dailyhead{display:flex; justify-content:space-between; align-items:baseline; gap:8px; flex-wrap:wrap; font-weight:600}
+.streak{font-family:var(--f-mono); font-size:13px; font-weight:500; color:var(--muted)}
+.streak.on{color:var(--accent)}
+.dbar{position:relative; height:10px; border-radius:999px; background:var(--track); overflow:visible}
+.dbar>div{height:100%; width:0; border-radius:999px; background:var(--muted); transition:width .3s}
+.dbar.hit>div{background:var(--accent)}
+.dbar.ideal>div{background:var(--deep)}
+.dbar>i{position:absolute; top:-3px; bottom:-3px; width:2px; background:var(--ink); border-radius:1px; opacity:.55}
 .day.today .dname{color:var(--ink); font-weight:600}
 .dname{font-size:12px; color:var(--muted)}
 .dval{font-family:var(--f-mono); font-size:11px; color:var(--muted); height:14px}
@@ -129,7 +144,7 @@ input[type=text],input[type=email],input[type=number],input[type=date],input[typ
 .hhead{display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap}
 .dayhead{display:flex; justify-content:space-between; gap:8px; padding:14px 0 6px; font-weight:600; border-bottom:1px solid var(--line)}
 .dayhead span:last-child{font-family:var(--f-mono); font-weight:400; color:var(--muted); font-size:14px}
-.row{display:grid; grid-template-columns:150px 120px 90px minmax(0,1fr) auto; gap:4px 12px; align-items:center; padding:9px 0; border-bottom:1px solid var(--line)}
+.row{display:grid; grid-template-columns:180px 120px 90px minmax(0,1fr) auto; gap:4px 12px; align-items:center; padding:9px 0; border-bottom:1px solid var(--line)}
 .row .t{font-family:var(--f-mono); font-size:13px; color:var(--muted)}
 .row .d{font-variant-numeric:tabular-nums}
 .row .d em{font-style:normal; color:var(--muted); font-size:13px}
@@ -168,7 +183,7 @@ code{font-family:var(--f-mono); font-size:13px; background:var(--bg); padding:2p
 
 #toast{position:fixed; left:50%; transform:translateX(-50%); bottom:max(16px, env(safe-area-inset-bottom, 0px)); background:var(--ink); color:var(--bg); padding:10px 16px; border-radius:10px; font-weight:500; opacity:0; pointer-events:none; transition:opacity .2s; z-index:20; max-width:calc(100% - 32px)}
 #toast.show{opacity:1}
-@media (prefers-reduced-motion: reduce){.bar>div,#toast{transition:none}}
+@media (prefers-reduced-motion: reduce){.bar>div,.dbar>div,#toast{transition:none}}
 </style>
 </head>
 <body>
@@ -244,7 +259,11 @@ code{font-family:var(--f-mono); font-size:13px; background:var(--bg); padding:2p
         <button class="btn" id="stop" type="button" hidden>Stop &amp; save</button>
         <button class="btn ghost" id="discard" type="button" hidden>Discard</button>
       </div>
-      <p class="today" id="today">Today: no sessions yet</p>
+      <div class="daily" aria-label="Today">
+        <div class="dailyhead"><span>Today</span><span class="streak" id="streak"></span></div>
+        <div class="dbar" id="dbar" aria-hidden="true"><div id="dfill"></div><i id="dminMark"></i></div>
+        <p class="today" id="today">No sessions yet today.</p>
+      </div>
     </section>
 
     <section class="card week" aria-label="Weekly progress">
@@ -260,6 +279,7 @@ code{font-family:var(--f-mono); font-size:13px; background:var(--bg); padding:2p
       <div class="bar" aria-hidden="true"><div id="weekbar"></div></div>
       <p class="status" id="weekstatus">Loading your sessions.</p>
       <div class="days" id="days"></div>
+      <p class="legend" id="legend"><span><i style="background:var(--danger)"></i>Under minimum</span><span><i style="background:var(--accent)"></i>Minimum hit</span><span><i style="background:var(--deep)"></i>Ideal hit</span></p>
       <p class="cats" id="weekcats"></p>
       <div class="weekfoot">
         <span class="range" style="text-align:left">Monday to Sunday</span>
@@ -290,6 +310,9 @@ code{font-family:var(--f-mono); font-size:13px; background:var(--bg); padding:2p
     <summary>Settings</summary>
     <h3>Weekly goal</h3>
     <div class="inline"><input type="number" id="goal" min="0.5" max="100" step="0.5" aria-label="Weekly goal in hours"><span class="range">hours per week</span></div>
+
+    <h3>Daily goal</h3>
+    <div class="inline"><input type="number" id="dmin" min="5" max="600" step="5" aria-label="Daily minimum in minutes"><span class="range">minutes minimum</span><input type="number" id="dideal" min="0.5" max="16" step="0.5" aria-label="Daily ideal in hours"><span class="range">hours ideal</span></div>
 
     <h3>Categories</h3>
     <div class="tags" id="catTags"></div>

@@ -5,6 +5,8 @@ var CFG = window.FOCUSLOG_CONFIG || {};
 var $ = function (id) { return document.getElementById(id); };
 var DEFAULTS = {
   goal: 3.5,
+  dmin: 30,
+  dideal: 4,
   cats: ["School", "Arabic", "Business", "Career", "Other"],
   presets: [{ work: 25, brk: 5 }, { work: 50, brk: 10 }]
 };
@@ -226,6 +228,8 @@ function mergeSettings(s) {
   if (typeof s.goal === "number" && s.goal > 0) settings.goal = s.goal;
   if (Array.isArray(s.cats) && s.cats.length) settings.cats = s.cats;
   if (Array.isArray(s.presets) && s.presets.length) settings.presets = s.presets;
+  if (typeof s.dmin === "number" && s.dmin > 0) settings.dmin = s.dmin;
+  if (typeof s.dideal === "number" && s.dideal > 0) settings.dideal = s.dideal;
 }
 function fetchRemote() {
   if (!sb || !user) return;
@@ -243,7 +247,7 @@ function fetchRemote() {
     pendingList().forEach(function (s) { if (!ids[s.id]) remote.push(s); });
     sessions = remote; sortSessions();
     if (b && !b.error && b.data) {
-      mergeSettings({ goal: Number(b.data.goal_hours), cats: b.data.categories, presets: b.data.presets });
+      mergeSettings({ goal: Number(b.data.goal_hours), dmin: Number(b.data.daily_min_minutes), dideal: Number(b.data.daily_ideal_hours), cats: b.data.categories, presets: b.data.presets });
       buildSettings(); buildTimerChoices();
     }
     loaded = true; cacheNow(); renderAll(); renderTimer(); flushPending();
@@ -282,7 +286,7 @@ function deleteSession(id) {
 function saveSettings() {
   cacheNow();
   if (!sb || !user) return;
-  sb.from("user_settings").upsert({ user_id: user.id, goal_hours: settings.goal, categories: settings.cats, presets: settings.presets, updated_at: new Date().toISOString() }).then(function (r) {
+  sb.from("user_settings").upsert({ user_id: user.id, goal_hours: settings.goal, daily_min_minutes: settings.dmin, daily_ideal_hours: settings.dideal, categories: settings.cats, presets: settings.presets, updated_at: new Date().toISOString() }).then(function (r) {
     if (r.error) toast("Couldn't sync settings (" + r.error.message + ")");
   }).catch(function () { toast("Settings saved on this device only for now."); });
 }
@@ -397,6 +401,40 @@ function weekSessions(offset) {
   var ws = weekStart(offset), we = new Date(ws); we.setDate(we.getDate() + 7);
   return sessions.filter(function (s) { var d = new Date(Date.parse(s.startedAt)); return d >= ws && d < we; });
 }
+function dayTotals() {
+  var m = {}, first = null;
+  sessions.forEach(function (s) {
+    var d = new Date(Date.parse(s.startedAt)); if (isNaN(d)) return;
+    var k = ymd(d); m[k] = (m[k] || 0) + (s.seconds || 0);
+    if (!first || d < first) first = d;
+  });
+  if (first) first.setHours(0, 0, 0, 0);
+  return { map: m, first: first };
+}
+function streakDays(t) {
+  var min = settings.dmin * 60, d = new Date(); d.setHours(0, 0, 0, 0);
+  if ((t.map[ymd(d)] || 0) < min) d.setDate(d.getDate() - 1);
+  var n = 0;
+  while ((t.map[ymd(d)] || 0) >= min) { n++; d.setDate(d.getDate() - 1); }
+  return n;
+}
+function renderDaily(t) {
+  var min = settings.dmin * 60, ideal = settings.dideal * 3600;
+  var secs = t.map[ymd(new Date())] || 0;
+  var bar = $("dbar");
+  bar.className = "dbar" + (secs >= ideal ? " ideal" : secs >= min ? " hit" : "");
+  $("dfill").style.width = Math.min(100, secs / ideal * 100) + "%";
+  $("dminMark").style.left = "calc(" + Math.min(100, min / ideal * 100) + "% - 1px)";
+  var msg;
+  if (!secs) msg = "Nothing yet. " + hm(min) + " gets today's minimum.";
+  else if (secs < min) msg = hm(secs) + " so far. " + hm(min - secs) + " to your " + hm(min) + " minimum.";
+  else if (secs < ideal) msg = hm(secs) + ". Minimum done. " + hm(ideal - secs) + " to your " + hm(ideal) + " ideal.";
+  else msg = hm(secs) + ". Ideal day hit.";
+  $("today").textContent = msg;
+  var st = streakDays(t), el = $("streak");
+  el.textContent = st ? st + " day streak" : "No streak yet";
+  el.className = "streak" + (st ? " on" : "");
+}
 function renderWeek() {
   var ws = weekStart(weekOffset), we = new Date(ws); we.setDate(we.getDate() + 7);
   var last = new Date(we); last.setDate(last.getDate() - 1);
@@ -417,18 +455,29 @@ function renderWeek() {
   $("weekbar").style.width = Math.min(100, goal ? total / goal * 100 : 0) + "%";
   $("weekstatus").textContent = !loaded ? "Loading your sessions." :
     total >= goal ? "Goal reached. " + hm(total - goal) + " extra." : hm(goal - total) + " to go" + (weekOffset === 0 ? " this week." : ".");
+  var tot = dayTotals();
   var scale = Math.max(Math.max.apply(null, days), 3600);
   var box = $("days"); box.textContent = "";
   days.forEach(function (secs, i) {
-    var d = document.createElement("div"); d.className = "day" + (secs ? " has" : "") + (weekOffset === 0 && i === todayIdx ? " today" : "");
-    var v = document.createElement("div"); v.className = "dval"; v.textContent = secs ? hm(secs) : "";
-    var col = document.createElement("div"); col.className = "col"; var bar = document.createElement("div"); bar.style.height = Math.max(3, secs / scale * 84) + "px"; col.appendChild(bar);
+    var dayDate = new Date(ws); dayDate.setDate(ws.getDate() + i);
+    var isToday = dayDate.toDateString() === now.toDateString();
+    var past = dayDate < new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var tracked = tot.first && dayDate >= tot.first;
+    var cls = "";
+    if (secs >= settings.dideal * 3600) cls = " ideal";
+    else if (secs >= settings.dmin * 60) cls = " hit";
+    else if (past && tracked) cls = " miss";
+    else if (secs) cls = " part";
+    var d = document.createElement("div"); d.className = "day" + cls + (isToday ? " today" : "");
+    d.title = DAY_NAMES[i] + ": " + (secs ? hm(secs) : "nothing logged") + (cls === " miss" ? " (under minimum)" : "");
+    var v = document.createElement("div"); v.className = "dval"; v.textContent = secs ? hm(secs) : (cls === " miss" ? "0m" : "");
+    var col = document.createElement("div"); col.className = "col"; var bar = document.createElement("div"); bar.style.height = Math.max(cls === " miss" ? 6 : 3, secs / scale * 84) + "px"; col.appendChild(bar);
     var n = document.createElement("div"); n.className = "dname"; n.textContent = DAY_NAMES[i];
     d.appendChild(v); d.appendChild(col); d.appendChild(n); box.appendChild(d);
   });
   var names = Object.keys(cats).sort(function (a, b) { return cats[b] - cats[a]; });
   $("weekcats").textContent = names.length ? names.map(function (k) { return k + " " + hm(cats[k]); }).join("  |  ") : "";
-  $("today").textContent = todayN ? "Today: " + todayN + " session" + (todayN > 1 ? "s" : "") + ", " + hm(todaySecs) : "Today: no sessions yet";
+  renderDaily(tot);
 }
 
 function renderHistory() {
@@ -515,6 +564,8 @@ function chip(text, onRemove, canRemove) {
 }
 function buildSettings() {
   if (document.activeElement !== $("goal")) $("goal").value = settings.goal;
+  if (document.activeElement !== $("dmin")) $("dmin").value = settings.dmin;
+  if (document.activeElement !== $("dideal")) $("dideal").value = settings.dideal;
   var ct = $("catTags"); ct.textContent = "";
   settings.cats.forEach(function (c, i) {
     ct.appendChild(chip(c, function () { settings.cats.splice(i, 1); afterSettingsChange(); }, settings.cats.length > 1));
@@ -578,6 +629,18 @@ function wire() {
   });
   $("exportAll").addEventListener("click", function () { exportCsv(sessions, "focus-log-all-" + ymd(new Date()) + ".csv"); });
 
+  $("dmin").addEventListener("change", function () {
+    var v = parseInt(this.value, 10);
+    if (!(v >= 5 && v <= 600)) { this.value = settings.dmin; return; }
+    if (v === settings.dmin) return;
+    settings.dmin = v; renderWeek(); saveSettings();
+  });
+  $("dideal").addEventListener("change", function () {
+    var v = parseFloat(this.value);
+    if (!(v >= 0.5 && v <= 16)) { this.value = settings.dideal; return; }
+    if (v === settings.dideal) return;
+    settings.dideal = v; renderWeek(); saveSettings();
+  });
   $("goal").addEventListener("change", function () {
     var v = parseFloat(this.value);
     if (!(v > 0) || v > 100) { this.value = settings.goal; return; }

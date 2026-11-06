@@ -45,3 +45,8 @@ revoke truncate, references, trigger on public.sessions from authenticated;
 grant select, insert, update, delete on public.sessions to authenticated;
 revoke truncate, references, trigger on public.user_settings from authenticated;
 grant select, insert, update, delete on public.user_settings to authenticated;
+
+-- Daily goal (added in v0.2)
+alter table public.user_settings
+  add column if not exists daily_min_minutes integer not null default 30,
+  add column if not exists daily_ideal_hours numeric not null default 4;
