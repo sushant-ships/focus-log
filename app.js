@@ -314,6 +314,14 @@ function renderTimer() {
   $("ring").style.strokeDashoffset = String(C * (1 - (total ? rem / total : 1)));
   $("timer").setAttribute("data-phase", S.phase);
   $("phase").textContent = S.phase === "idle" ? "Ready" : S.phase === "break" ? "Break" : (S.running ? "Focus" : "Paused");
+  if (pipWin) {
+    var pd = pipWin.document;
+    pd.getElementById("pc").textContent = clock(rem);
+    pd.getElementById("pp").textContent = $("phase").textContent;
+    pd.getElementById("pb").textContent = $("main").textContent;
+    pd.body.setAttribute("data-phase", S.phase);
+  }
+  if ($("focusLabel")) $("focusLabel").textContent = S.cat + ($("note").value.trim() ? "  \u00b7  " + $("note").value.trim() : "");
   document.title = S.running ? clock(rem) + " " + (S.phase === "work" ? "Focus" : "Break") + " | Focus Log" : "Focus Log";
 }
 function renderControls() {
@@ -610,6 +618,45 @@ function exportCsv(list, name) {
   toast("Exported " + list.length + " session" + (list.length > 1 ? "s" : ""));
 }
 
+/* ---------- focus mode + pop out ---------- */
+var wakeLock = null, pipWin = null;
+function keepAwake(on) {
+  try {
+    if (on && !wakeLock && navigator.wakeLock) navigator.wakeLock.request("screen").then(function (l) { wakeLock = l; l.addEventListener("release", function () { wakeLock = null; }); }).catch(function () {});
+    if (!on && wakeLock) { wakeLock.release().catch(function () {}); wakeLock = null; }
+  } catch (e) {}
+}
+function inFocus() { return document.body.classList.contains("focusmode"); }
+function enterFocus() {
+  document.body.classList.add("focusmode");
+  keepAwake(true); renderTimer();
+  try { var r = document.documentElement.requestFullscreen && document.documentElement.requestFullscreen(); if (r && r.catch) r.catch(function () {}); } catch (e) {}
+}
+function exitFocus() {
+  document.body.classList.remove("focusmode");
+  keepAwake(false);
+  try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(function () {}); } catch (e) {}
+}
+function popOut() {
+  if (!window.documentPictureInPicture) return;
+  if (pipWin) { try { pipWin.focus(); } catch (e) {} return; }
+  ensureAudio();
+  window.documentPictureInPicture.requestWindow({ width: 240, height: 200 }).then(function (w) {
+    pipWin = w;
+    var cs = getComputedStyle(document.documentElement), v = function (n) { return cs.getPropertyValue(n).trim(); };
+    var st = w.document.createElement("style");
+    st.textContent = "body{margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:" + v("--bg") + ";color:" + v("--ink") + ";font-family:'DM Mono',ui-monospace,Menlo,monospace}" +
+      "#pc{font-size:44px;font-weight:500;font-variant-numeric:tabular-nums}#pp{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:" + v("--accent") + "}" +
+      "body[data-phase=break] #pp{color:" + v("--break") + "}#pb{margin-top:8px;font:600 14px system-ui,sans-serif;padding:8px 18px;border-radius:9px;border:0;cursor:pointer;background:" + v("--accent") + ";color:" + v("--accent-ink") + "}" +
+      "body[data-phase=break] #pb{background:" + v("--break") + "}";
+    w.document.head.appendChild(st);
+    w.document.body.innerHTML = '<div id="pc"></div><div id="pp"></div><button id="pb" type="button"></button>';
+    w.document.getElementById("pb").addEventListener("click", mainClick);
+    w.addEventListener("pagehide", function () { pipWin = null; });
+    renderTimer();
+  }).catch(function () { toast("Couldn't open the pop-out window."); });
+}
+
 /* ---------- buildAll + wiring ---------- */
 function buildAll() {
   buildSettings(); buildTimerChoices(); resumeRunning();
@@ -621,6 +668,19 @@ function buildAll() {
 }
 
 function wire() {
+  $("focusBtn").addEventListener("click", enterFocus);
+  $("exitFocus").addEventListener("click", exitFocus);
+  if (window.documentPictureInPicture) { $("popBtn").hidden = false; $("popBtn").addEventListener("click", popOut); }
+  document.addEventListener("fullscreenchange", function () { if (!document.fullscreenElement && inFocus()) exitFocus(); });
+  document.addEventListener("keydown", function (e) {
+    if (!appStarted || $("appView").hidden) return;
+    var t = e.target, tag = t && t.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable)) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === "Escape" && inFocus()) { exitFocus(); }
+    else if (e.key === "f" || e.key === "F") { e.preventDefault(); inFocus() ? exitFocus() : enterFocus(); }
+    else if (e.key === " " && (!t || tag !== "BUTTON")) { e.preventDefault(); mainClick(); }
+  });
   $("authForm").addEventListener("submit", submitAuth);
   $("newPwForm").addEventListener("submit", saveNewPw);
   $("modeBtn").addEventListener("click", function () { setMode(!signupMode); });

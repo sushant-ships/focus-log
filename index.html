@@ -188,6 +188,20 @@ code{font-family:var(--f-mono); font-size:13px; background:var(--bg); padding:2p
 
 #toast{position:fixed; left:50%; transform:translateX(-50%); bottom:max(16px, env(safe-area-inset-bottom, 0px)); background:var(--ink); color:var(--bg); padding:10px 16px; border-radius:10px; font-weight:500; opacity:0; pointer-events:none; transition:opacity .2s; z-index:20; max-width:calc(100% - 32px)}
 #toast.show{opacity:1}
+/* Focus mode: only the timer, full screen */
+.viewbtns{display:flex; gap:4px; align-self:stretch; justify-content:flex-end; margin:-8px -8px -6px 0}
+.focuslabel{display:none}
+#exitFocus{display:none}
+body.focusmode #appView > *:not(.grid){display:none !important}
+body.focusmode .grid{grid-template-columns:minmax(0,1fr)}
+body.focusmode .week, body.focusmode .viewbtns, body.focusmode .seg, body.focusmode .fields, body.focusmode .daily{display:none}
+body.focusmode .timer{border:0; background:none; min-height:calc(100vh - 72px); justify-content:center; gap:28px}
+body.focusmode .ringwrap{width:min(78vmin,620px)}
+body.focusmode #clock{font-size:clamp(64px,17vmin,200px)}
+body.focusmode #phase{font-size:clamp(13px,2.2vmin,22px)}
+body.focusmode .focuslabel{display:block; color:var(--muted); font-size:clamp(13px,2vmin,20px); max-width:80%; text-align:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+body.focusmode #exitFocus{display:inline-block; position:fixed; z-index:15; top:calc(12px + env(safe-area-inset-top, 0px)); right:max(16px, env(safe-area-inset-right, 0px)); opacity:.6}
+body.focusmode #exitFocus:hover, body.focusmode #exitFocus:focus-visible{opacity:1}
 @media (prefers-reduced-motion: reduce){.bar>div,.dbar>div,#toast{transition:none}}
 </style>
 </head>
@@ -241,6 +255,10 @@ code{font-family:var(--f-mono); font-size:13px; background:var(--bg); padding:2p
 
   <div class="grid">
     <section class="card timer" id="timer" data-phase="idle" aria-label="Timer">
+      <div class="viewbtns">
+        <button class="small link" id="focusBtn" type="button" title="Full screen focus mode (F)">Focus mode</button>
+        <button class="small link" id="popBtn" type="button" title="Small floating timer window" hidden>Pop out</button>
+      </div>
       <div class="seg" role="radiogroup" aria-label="Preset" id="presets"></div>
 
       <div class="ringwrap">
@@ -249,6 +267,7 @@ code{font-family:var(--f-mono); font-size:13px; background:var(--bg); padding:2p
           <circle class="ring-prog" id="ring" cx="120" cy="120" r="108"></circle>
         </svg>
         <div class="readout" role="timer" aria-live="off">
+          <div id="focusLabel" class="focuslabel"></div>
           <div id="clock">25:00</div>
           <div id="phase">Ready</div>
         </div>
@@ -336,6 +355,7 @@ code{font-family:var(--f-mono); font-size:13px; background:var(--bg); padding:2p
     <div class="inline"><button class="small" id="exportAll" type="button">Export all sessions (CSV)</button></div>
   </details>
 </main>
+<button class="small" id="exitFocus" type="button">Exit focus (Esc)</button>
 <div id="toast" role="status" aria-live="polite"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
