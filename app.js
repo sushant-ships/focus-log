@@ -14,7 +14,7 @@ var K_TIMER = "focuslog.timer.v2", K_CACHE = "focuslog.cache.v2", K_PEND = "focu
 var R = 108, C = 2 * Math.PI * R;
 var DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-var sb = null, user = null, appStarted = false;
+var sb = null, user = null, appStarted = false, demo = false, demoLeft = false;
 var settings = clone(DEFAULTS);
 var sessions = [], loaded = false, weekOffset = 0, showCount = 30;
 var armed = null, armTimer = null, audioCtx = null, toastTimer = null, tickHandle = null;
@@ -91,7 +91,7 @@ function show(view) {
 function initAuth() {
   if (!CFG.SUPABASE_URL || !CFG.SUPABASE_ANON_KEY) { show("setupView"); return; }
   if (!window.supabase || !window.supabase.createClient) {
-    show("loginView"); $("loginErr").textContent = "Couldn't load the sign-in library. Check your connection and reload."; return;
+    show("loginView"); $("loginErr").textContent = "Couldn't load the sign-in library. Check your connection and reload."; if (wantsDemo()) startDemo(); return;
   }
   sb = window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
@@ -108,10 +108,12 @@ function initAuth() {
 function onSession(sess) {
   if (sess && sess.user) {
     if (user && user.id === sess.user.id && appStarted) return;
+    if (demo) leaveDemo();
     user = sess.user;
     startApp();
   } else {
-    if (!user && !appStarted) { show("loginView"); }
+    if (demo) return;
+    if (!user && !appStarted) { if (wantsDemo()) startDemo(); else show("loginView"); }
     else if (user) { user = null; appStarted = false; show("loginView"); }
   }
 }
@@ -179,6 +181,7 @@ function saveNewPw(e) {
   }).catch(function () { $("newPwBtn").disabled = false; $("loginErr").textContent = "Couldn't reach the server."; });
 }
 function signOut() {
+  if (demo) { exitDemo(); return; }
   if (!sb) return;
   sb.auth.signOut().then(function () {
     lsDel(K_CACHE); lsDel(K_PEND); sessions = []; loaded = false; settings = clone(DEFAULTS);
@@ -194,7 +197,7 @@ function sessionToRow(s) {
   return { id: s.id, started_at: s.startedAt, ended_at: s.endedAt, seconds: s.seconds, category: s.category, note: s.note || "", preset: s.preset || "", completed: s.completed !== false };
 }
 function sortSessions() { sessions.sort(function (a, b) { return Date.parse(b.startedAt) - Date.parse(a.startedAt); }); }
-function cacheNow() { if (user) lsSet(K_CACHE, { uid: user.id, sessions: sessions, settings: settings }); }
+function cacheNow() { if (user && !demo) lsSet(K_CACHE, { uid: user.id, sessions: sessions, settings: settings }); }
 function pendingList() { var p = lsGet(K_PEND); return (p && p.uid === (user && user.id) && p.items) ? p.items : []; }
 function setPending(items) { if (items.length) lsSet(K_PEND, { uid: user.id, items: items }); else lsDel(K_PEND); updatePendingBanner(); }
 function updatePendingBanner() {
@@ -203,16 +206,69 @@ function updatePendingBanner() {
   else removeBanner("pending");
 }
 function flushPending() {
-  var items = pendingList(); if (!items.length || !sb || !user) return;
+  var items = pendingList(); if (!items.length || !sb || !user || demo) return;
   sb.from("sessions").upsert(items.map(sessionToRow)).then(function (r) {
     if (r.error) { toast("Still can't sync (" + r.error.message + ")"); return; }
     setPending([]); toast("Synced " + items.length + " session" + (items.length > 1 ? "s" : ""));
   }).catch(function () { toast("Still offline. Will retry."); });
 }
 
+/* ---------- demo mode: sample data, nothing is stored or sent ---------- */
+function wantsDemo() { return !demoLeft && /[?&]demo\b/.test(location.search); }
+function demoSessions() {
+  var out = [], now = Date.now(), seed = 7;
+  function rnd() { seed = (seed * 16807) % 2147483647; return seed / 2147483647; }
+  function pick(a) { return a[Math.floor(rnd() * a.length)]; }
+  var cats = ["School", "School", "School", "Arabic", "Arabic", "Career", "Business", "Other"];
+  var notes = {
+    School: ["Data structures homework", "Discrete math problem set", "Read chapter 6", "Lab report"],
+    Arabic: ["Vocabulary review", "Listening practice", "Grammar drills"],
+    Business: ["Client proposal", "Landing page copy"],
+    Career: ["Resume edits", "Internship applications", "Coding interview practice"],
+    Other: ["Weekly planning", ""]
+  };
+  for (var back = 24; back >= 0; back--) {
+    var day = new Date(); day.setHours(0, 0, 0, 0); day.setDate(day.getDate() - back);
+    var n = (back > 5 && rnd() < 0.2) ? 0 : 1 + Math.floor(rnd() * 4);
+    var t = day.getTime() + (8 + Math.floor(rnd() * 3)) * 3600000 + Math.floor(rnd() * 4) * 15 * 60000;
+    for (var i = 0; i < n; i++) {
+      var long = rnd() < 0.4, work = long ? 50 : 25, cat = pick(cats);
+      var full = rnd() > 0.12, secs = full ? work * 60 : (8 + Math.floor(rnd() * (work - 10))) * 60;
+      var end = t + secs * 1000; if (end > now) break;
+      out.push({ id: uuid(), startedAt: new Date(t).toISOString(), endedAt: new Date(end).toISOString(), seconds: secs, category: cat, note: pick(notes[cat]), preset: long ? "50/10" : "25/5", completed: full });
+      t = end + (long ? 10 : 5) * 60000 + Math.floor(rnd() * 6) * 20 * 60000;
+    }
+  }
+  return out;
+}
+function startDemo() {
+  if (demo) return;
+  demo = true; user = { id: "demo", email: "" };
+  settings = clone(DEFAULTS); settings.goal = 12;
+  sessions = demoSessions(); sortSessions(); loaded = true;
+  weekOffset = 0; showCount = 30; S.preset = label(settings.presets[0]); S.cat = settings.cats[0];
+  toIdle(); $("note").value = "";
+  appStarted = true; show("appView");
+  $("who").textContent = "Demo"; $("signout").textContent = "Exit demo";
+  $("banners").textContent = "";
+  buildAll();
+  addBanner("demo", "Demo mode with sample data. Nothing you do here is saved.", [{ label: "Exit demo", fn: exitDemo }]);
+}
+function leaveDemo() {
+  demo = false; demoLeft = true; user = null; appStarted = false;
+  sessions = []; loaded = false; settings = clone(DEFAULTS);
+  if (inFocus()) exitFocus();
+  if (pipWin) { try { pipWin.close(); } catch (e) {} pipWin = null; }
+  toIdle(); $("note").value = ""; $("banners").textContent = "";
+  $("signout").textContent = "Sign out";
+  try { if (/[?&]demo\b/.test(location.search)) history.replaceState(null, "", location.pathname); } catch (e) {}
+}
+function exitDemo() { leaveDemo(); renderControls(); renderTimer(); show("loginView"); }
+
 function startApp() {
   appStarted = true;
   show("appView");
+  $("signout").textContent = "Sign out";
   $("who").textContent = user.email || "";
   var cache = lsGet(K_CACHE);
   if (cache && cache.uid === user.id) {
@@ -232,7 +288,7 @@ function mergeSettings(s) {
   if (typeof s.dideal === "number" && s.dideal > 0) settings.dideal = s.dideal;
 }
 function fetchRemote() {
-  if (!sb || !user) return;
+  if (!sb || !user || demo) return;
   var slow = setTimeout(function () { if (!loaded) addBanner("slow", "Loading is taking a while. The timer works in the meantime.", []); }, 10000);
   Promise.all([
     sb.from("sessions").select("*").order("started_at", { ascending: false }).limit(5000),
@@ -260,6 +316,7 @@ function fetchRemote() {
 function saveSession(s) {
   s.id = uuid();
   sessions.push(s); sortSessions(); cacheNow(); renderAll();
+  if (demo) { toast("Logged " + dur(s.seconds) + " of " + s.category.toLowerCase() + " (demo, not saved)"); return; }
   if (!sb || !user) return;
   sb.from("sessions").upsert(sessionToRow(s)).then(function (r) {
     if (r.error) throw r.error;
@@ -274,6 +331,7 @@ function deleteSession(id) {
   if (idx < 0) return;
   var gone = sessions.splice(idx, 1)[0];
   cacheNow(); renderAll();
+  if (demo) { toast("Session deleted"); return; }
   var pend = pendingList();
   if (pend.some(function (s) { return s.id === id; })) { setPending(pend.filter(function (s) { return s.id !== id; })); toast("Session deleted"); return; }
   sb.from("sessions").delete().eq("id", id).then(function (r) {
@@ -285,7 +343,7 @@ function deleteSession(id) {
 }
 function saveSettings() {
   cacheNow();
-  if (!sb || !user) return;
+  if (!sb || !user || demo) return;
   sb.from("user_settings").upsert({ user_id: user.id, goal_hours: settings.goal, daily_min_minutes: settings.dmin, daily_ideal_hours: settings.dideal, categories: settings.cats, presets: settings.presets, updated_at: new Date().toISOString() }).then(function (r) {
     if (r.error) toast("Couldn't sync settings (" + r.error.message + ")");
   }).catch(function () { toast("Settings saved on this device only for now."); });
@@ -301,6 +359,7 @@ function saveRecovered() {
 
 /* ---------- timer ---------- */
 function persistTimer() {
+  if (demo) return;
   lsSet(K_TIMER, { uid: user && user.id, phase: S.phase, preset: S.preset, running: S.running, endAt: S.endAt, remaining: S.remaining, startedAt: S.startedAt, pausedAt: S.pausedAt || null, cat: S.cat, sound: S.sound, note: $("note").value });
 }
 var AUTO_STOP_MS = 15 * 60000, pendingRecovery = null;
@@ -686,6 +745,7 @@ function wire() {
   $("modeBtn").addEventListener("click", function () { setMode(!signupMode); });
   $("forgotBtn").addEventListener("click", forgot);
   $("signout").addEventListener("click", signOut);
+  $("demoBtn").addEventListener("click", startDemo);
   $("sound").addEventListener("change", function () { S.sound = this.checked; persistTimer(); if (S.sound) ensureAudio(); });
   $("note").addEventListener("input", persistTimer);
   $("main").addEventListener("click", mainClick);
