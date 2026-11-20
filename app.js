@@ -17,8 +17,8 @@ var DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 var sb = null, user = null, appStarted = false, demo = false, demoLeft = false;
 var settings = clone(DEFAULTS);
 var sessions = [], loaded = false, weekOffset = 0, showCount = 30;
-var armed = null, armTimer = null, audioCtx = null, toastTimer = null, tickHandle = null;
-var S = { phase: "idle", preset: "25/5", running: false, endAt: 0, remaining: 25 * 60000, startedAt: null, cat: "School", sound: true };
+var editingId = null, armed = null, armTimer = null, audioCtx = null, toastTimer = null, tickHandle = null;
+var S = { phase: "idle", preset: "25/5", running: false, endAt: 0, remaining: 25 * 60000, startedAt: null, cat: "School", sound: true, notify: false };
 
 /* ---------- helpers ---------- */
 function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -81,6 +81,31 @@ function bell() {
       osc.connect(g); g.connect(audioCtx.destination); osc.start(t + o); osc.stop(t + o + 0.24);
     });
   } catch (e) {}
+}
+
+function canNotify() { return ("Notification" in window) && Notification.permission === "granted"; }
+function notify(title, body) {
+  if (!S.notify || !canNotify()) return;
+  if (!document.hidden && document.hasFocus()) return;
+  var opts = { body: body, icon: "icons/icon-192.png", tag: "focuslog" };
+  var plain = function () { try { new Notification(title, opts); } catch (e) {} };
+  try {
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
+      navigator.serviceWorker.getRegistration().then(function (reg) {
+        if (reg && reg.showNotification) return reg.showNotification(title, opts);
+        plain();
+      }).catch(plain);
+    } else plain();
+  } catch (e) { plain(); }
+}
+function notifyToggle() {
+  var box = $("notify");
+  if (!box.checked) { S.notify = false; persistTimer(); return; }
+  if (!("Notification" in window)) { box.checked = false; return; }
+  if (Notification.permission === "granted") { S.notify = true; persistTimer(); return; }
+  if (Notification.permission === "denied") { box.checked = false; toast("Notifications are blocked for this site in your browser settings."); return; }
+  var done = function (p) { S.notify = (p === "granted"); box.checked = S.notify; persistTimer(); if (!S.notify) toast("Alerts stay off until you allow notifications."); };
+  try { var r = Notification.requestPermission(done); if (r && r.then) r.then(done); } catch (e) { box.checked = false; }
 }
 
 /* ---------- views / auth ---------- */
@@ -184,7 +209,7 @@ function signOut() {
   if (demo) { exitDemo(); return; }
   if (!sb) return;
   sb.auth.signOut().then(function () {
-    lsDel(K_CACHE); lsDel(K_PEND); sessions = []; loaded = false; settings = clone(DEFAULTS);
+    cancelEdit(); lsDel(K_CACHE); lsDel(K_PEND); sessions = []; loaded = false; settings = clone(DEFAULTS);
     user = null; appStarted = false; show("loginView");
   });
 }
@@ -255,7 +280,7 @@ function startDemo() {
   addBanner("demo", "Demo mode with sample data. Nothing you do here is saved.", [{ label: "Exit demo", fn: exitDemo }]);
 }
 function leaveDemo() {
-  demo = false; demoLeft = true; user = null; appStarted = false;
+  cancelEdit(); demo = false; demoLeft = true; user = null; appStarted = false;
   sessions = []; loaded = false; settings = clone(DEFAULTS);
   if (inFocus()) exitFocus();
   if (pipWin) { try { pipWin.close(); } catch (e) {} pipWin = null; }
@@ -330,6 +355,7 @@ function deleteSession(id) {
   var idx = -1; sessions.forEach(function (s, i) { if (s.id === id) idx = i; });
   if (idx < 0) return;
   var gone = sessions.splice(idx, 1)[0];
+  if (editingId === id) cancelEdit();
   cacheNow(); renderAll();
   if (demo) { toast("Session deleted"); return; }
   var pend = pendingList();
@@ -340,6 +366,46 @@ function deleteSession(id) {
   }).catch(function () {
     sessions.push(gone); sortSessions(); cacheNow(); renderAll(); toast("Couldn't delete. Check your connection.");
   });
+}
+function updateSession(s) {
+  sortSessions(); cacheNow(); renderAll();
+  if (demo) { toast("Session updated (demo, not saved)"); return; }
+  if (!sb || !user) return;
+  var pend = pendingList();
+  if (pend.some(function (x) { return x.id === s.id; })) { setPending(pend.map(function (x) { return x.id === s.id ? s : x; })); toast("Session updated"); return; }
+  sb.from("sessions").upsert(sessionToRow(s)).then(function (r) {
+    if (r.error) throw r.error;
+    toast("Session updated");
+  }).catch(function () {
+    setPending(pendingList().concat([s]));
+    toast("Updated on this device. Will sync when online.");
+  });
+}
+function setManualMode() {
+  var ed = !!editingId;
+  $("manualSum").textContent = ed ? "Edit session" : "Add past session";
+  $("manualHint").textContent = ed ? "Change the details, then save." : "For work you did without the timer.";
+  $("manualSubmit").textContent = ed ? "Save changes" : "Add session";
+  $("manualCancel").hidden = !ed;
+}
+function startEdit(id) {
+  var s = null; sessions.forEach(function (x) { if (x.id === id) s = x; });
+  if (!s) return;
+  editingId = id;
+  var a = new Date(Date.parse(s.startedAt)), mc = $("mCat");
+  $("mDate").value = ymd(a); $("mTime").value = pad(a.getHours()) + ":" + pad(a.getMinutes());
+  $("mMin").value = Math.max(1, Math.round((s.seconds || 0) / 60));
+  if (!Array.prototype.some.call(mc.options, function (o) { return o.value === s.category; })) {
+    var o = document.createElement("option"); o.value = s.category; o.textContent = s.category; mc.appendChild(o);
+  }
+  mc.value = s.category; $("mNote").value = s.note || "";
+  setManualMode(); $("manual").open = true;
+  try { $("manual").scrollIntoView({ block: "center" }); } catch (e) {}
+  $("mMin").focus();
+}
+function cancelEdit() {
+  if (!editingId) return;
+  editingId = null; $("mMin").value = ""; $("mNote").value = ""; setManualMode();
 }
 function saveSettings() {
   cacheNow();
@@ -360,7 +426,7 @@ function saveRecovered() {
 /* ---------- timer ---------- */
 function persistTimer() {
   if (demo) return;
-  lsSet(K_TIMER, { uid: user && user.id, phase: S.phase, preset: S.preset, running: S.running, endAt: S.endAt, remaining: S.remaining, startedAt: S.startedAt, pausedAt: S.pausedAt || null, cat: S.cat, sound: S.sound, note: $("note").value });
+  lsSet(K_TIMER, { uid: user && user.id, phase: S.phase, preset: S.preset, running: S.running, endAt: S.endAt, remaining: S.remaining, startedAt: S.startedAt, pausedAt: S.pausedAt || null, cat: S.cat, sound: S.sound, notify: S.notify, note: $("note").value });
 }
 var AUTO_STOP_MS = 15 * 60000, pendingRecovery = null;
 function toIdle() { S.phase = "idle"; S.running = false; S.remaining = P().work * 60000; S.startedAt = null; S.pausedAt = null; }
@@ -432,9 +498,10 @@ function phaseDone() {
     var p = P();
     saveSession(makeRec(p.work * 60, new Date(S.endAt).toISOString(), true));
     bell();
+    notify("Focus session done", "Saved " + dur(p.work * 60) + " of " + S.cat.toLowerCase() + "." + (p.brk > 0 ? " Your " + p.brk + " minute break has started." : ""));
     if (p.brk > 0) { S.phase = "break"; S.remaining = p.brk * 60000; S.endAt = S.endAt + S.remaining; S.running = true; S.startedAt = null; }
     else toIdle();
-  } else { bell(); toIdle(); }
+  } else { bell(); notify("Break over", "Ready for the next session."); toIdle(); }
   persistTimer(); renderControls(); renderTimer();
 }
 function tick() {
@@ -445,6 +512,7 @@ function tick() {
 function restoreTimer() {
   var o = lsGet(K_TIMER); if (!o || o.uid !== (user && user.id)) return;
   if (typeof o.sound === "boolean") S.sound = o.sound;
+  S.notify = o.notify === true;
   if (typeof o.note === "string") $("note").value = o.note;
   if (o.preset) S.preset = o.preset;
   if (o.cat) S.cat = o.cat;
@@ -510,7 +578,7 @@ function renderDaily(t) {
   else msg = hm(secs) + ". Ideal day hit.";
   $("today").textContent = msg;
   var st = streakDays(t), el = $("streak");
-  el.textContent = st ? st + " day streak" : "No streak yet";
+  el.textContent = st ? st + " day streak" : (Object.keys(t.map).length ? "Start a new streak today" : "No streak yet");
   el.className = "streak" + (st ? " on" : "");
 }
 function renderWeek() {
@@ -589,7 +657,10 @@ function renderHistory() {
     var del = document.createElement("button"); del.type = "button"; del.className = "del" + (armed === s.id ? " armed" : "");
     del.textContent = armed === s.id ? "Tap to delete" : "Delete";
     del.addEventListener("click", function () { onDelete(s.id); });
-    r.appendChild(t); r.appendChild(du); r.appendChild(tag); r.appendChild(n); r.appendChild(del);
+    var ed = document.createElement("button"); ed.type = "button"; ed.className = "del"; ed.textContent = "Edit";
+    ed.addEventListener("click", function () { startEdit(s.id); });
+    var acts = document.createElement("div"); acts.className = "acts"; acts.appendChild(ed); acts.appendChild(del);
+    r.appendChild(t); r.appendChild(du); r.appendChild(tag); r.appendChild(n); r.appendChild(acts);
     box.appendChild(r);
   });
 }
@@ -601,7 +672,56 @@ function onDelete(id) {
   armed = null; clearTimeout(armTimer);
   deleteSession(id);
 }
-function renderAll() { renderWeek(); renderHistory(); }
+function renderStats() {
+  var t = dayTotals(), map = t.map, keys = Object.keys(map);
+  var now = new Date(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var min = settings.dmin * 60, ideal = settings.dideal * 3600;
+  var all = 0, month = 0, best = 0, bestKey = "", mk = ymd(now).slice(0, 7);
+  keys.forEach(function (k) { all += map[k]; if (k.slice(0, 7) === mk) month += map[k]; if (map[k] > best) { best = map[k]; bestKey = k; } });
+  var longest = 0, run = 0;
+  if (t.first) { for (var d = new Date(t.first); d <= today; d.setDate(d.getDate() + 1)) { if ((map[ymd(d)] || 0) >= min) { run++; if (run > longest) longest = run; } else run = 0; } }
+  var bestLabel = bestKey ? new Date(bestKey + "T12:00:00").toLocaleDateString([], { month: "short", day: "numeric" }) : "";
+  var tiles = [
+    [hm(month), now.toLocaleDateString([], { month: "long" }) + " so far"],
+    [hm(all), "All time, " + sessions.length + " session" + (sessions.length === 1 ? "" : "s")],
+    [best ? hm(best) : "0m", best ? "Best day, " + bestLabel : "Best day"],
+    [longest + (longest === 1 ? " day" : " days"), "Longest streak"]
+  ];
+  var box = $("tiles"); box.textContent = "";
+  tiles.forEach(function (x) {
+    var d = document.createElement("div"); d.className = "tile";
+    var b = document.createElement("b"); b.textContent = x[0];
+    var sp = document.createElement("span"); sp.textContent = x[1];
+    d.appendChild(b); d.appendChild(sp); box.appendChild(d);
+  });
+  $("statsSub").textContent = keys.length ? keys.length + " active day" + (keys.length === 1 ? "" : "s") : "";
+
+  var WEEKS = 16, heat = $("heat"); heat.textContent = "";
+  var start = weekStart(-(WEEKS - 1));
+  for (var i = 0; i < WEEKS * 7; i++) {
+    var day = new Date(start); day.setDate(start.getDate() + i);
+    var secs = map[ymd(day)] || 0, c = document.createElement("i");
+    c.className = day > today ? "fut" : secs >= ideal ? "ideal" : secs >= min ? "hit" : secs ? "part" : "";
+    if (day <= today) c.title = day.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) + ": " + (secs ? hm(secs) : "nothing logged");
+    heat.appendChild(c);
+  }
+
+  var cats = {}, ctot = 0;
+  sessions.forEach(function (s) {
+    var d = new Date(Date.parse(s.startedAt)); if (isNaN(d) || ymd(d).slice(0, 7) !== mk) return;
+    var k = s.category || "Other"; cats[k] = (cats[k] || 0) + (s.seconds || 0); ctot += s.seconds || 0;
+  });
+  var names = Object.keys(cats).sort(function (a, b) { return cats[b] - cats[a]; }), cb = $("catBars"); cb.textContent = "";
+  if (!names.length) { var e = document.createElement("p"); e.className = "cats"; e.textContent = "Nothing logged this month yet."; cb.appendChild(e); }
+  names.forEach(function (k) {
+    var r = document.createElement("div"); r.className = "catrow";
+    var n = document.createElement("span"); n.textContent = k;
+    var bar = document.createElement("div"); bar.className = "bar"; var f = document.createElement("div"); f.style.width = Math.round(cats[k] / cats[names[0]] * 100) + "%"; bar.appendChild(f);
+    var v = document.createElement("span"); v.className = "cv"; v.textContent = hm(cats[k]) + " (" + Math.round(cats[k] / ctot * 100) + "%)";
+    r.appendChild(n); r.appendChild(bar); r.appendChild(v); cb.appendChild(r);
+  });
+}
+function renderAll() { renderWeek(); renderStats(); renderHistory(); }
 
 /* ---------- timer choices + settings UI ---------- */
 function buildTimerChoices() {
@@ -720,10 +840,18 @@ function popOut() {
 function buildAll() {
   buildSettings(); buildTimerChoices(); resumeRunning();
   $("sound").checked = S.sound;
+  S.notify = S.notify && canNotify(); $("notify").checked = S.notify;
   var now = new Date();
   if (!$("mDate").value) $("mDate").value = ymd(now);
   renderControls(); renderTimer(); renderAll();
-  if (!tickHandle) tickHandle = setInterval(tick, 250);
+  if (!tickHandle) {
+    tickHandle = setInterval(tick, 250);
+    // Browsers slow page timers in background tabs. A worker keeps ticking so the bell and alert fire on time.
+    try {
+      var w = new Worker(URL.createObjectURL(new Blob(["setInterval(function(){postMessage(0)},1000)"], { type: "text/javascript" })));
+      w.onmessage = function () { if (appStarted && document.hidden) tick(); };
+    } catch (e) {}
+  }
 }
 
 function wire() {
@@ -746,6 +874,7 @@ function wire() {
   $("forgotBtn").addEventListener("click", forgot);
   $("signout").addEventListener("click", signOut);
   $("demoBtn").addEventListener("click", startDemo);
+  if ("Notification" in window) { $("notifyWrap").hidden = false; $("notify").addEventListener("change", notifyToggle); }
   $("sound").addEventListener("change", function () { S.sound = this.checked; persistTimer(); if (S.sound) ensureAudio(); });
   $("note").addEventListener("input", persistTimer);
   $("main").addEventListener("click", mainClick);
@@ -764,19 +893,19 @@ function wire() {
     var v = parseInt(this.value, 10);
     if (!(v >= 5 && v <= 600)) { this.value = settings.dmin; return; }
     if (v === settings.dmin) return;
-    settings.dmin = v; renderWeek(); saveSettings();
+    settings.dmin = v; renderWeek(); renderStats(); saveSettings();
   });
   $("dideal").addEventListener("change", function () {
     var v = parseFloat(this.value);
     if (!(v >= 0.5 && v <= 16)) { this.value = settings.dideal; return; }
     if (v === settings.dideal) return;
-    settings.dideal = v; renderWeek(); saveSettings();
+    settings.dideal = v; renderWeek(); renderStats(); saveSettings();
   });
   $("goal").addEventListener("change", function () {
     var v = parseFloat(this.value);
     if (!(v > 0) || v > 100) { this.value = settings.goal; return; }
     if (v === settings.goal) return;
-    settings.goal = v; renderWeek(); saveSettings();
+    settings.goal = v; renderWeek(); renderStats(); saveSettings();
   });
   $("addCat").addEventListener("click", function () {
     var v = $("newCat").value.trim().slice(0, 24);
@@ -799,12 +928,23 @@ function wire() {
     if (!$("mTime").value) $("mTime").value = pad(d.getHours()) + ":" + pad(d.getMinutes());
     if (!$("mMin").value) $("mMin").value = 25;
   });
+  $("manualCancel").addEventListener("click", cancelEdit);
   $("manualForm").addEventListener("submit", function (e) {
     e.preventDefault();
     var d = $("mDate").value, t = $("mTime").value, m = parseInt($("mMin").value, 10);
     if (!d || !t || !(m >= 1 && m <= 720)) { toast("Fill in date, start time and minutes."); return; }
     var start = new Date(d + "T" + t);
     if (isNaN(start)) { toast("That date or time isn't valid."); return; }
+    if (editingId) {
+      var cur = null; sessions.forEach(function (x) { if (x.id === editingId) cur = x; });
+      if (cur) {
+        var secs = Math.round((cur.seconds || 0) / 60) === m ? cur.seconds : m * 60;
+        cur.startedAt = start.toISOString(); cur.endedAt = new Date(start.getTime() + secs * 1000).toISOString();
+        cur.seconds = secs; cur.category = $("mCat").value; cur.note = $("mNote").value.trim().slice(0, 200);
+        updateSession(cur);
+      }
+      cancelEdit(); return;
+    }
     var end = new Date(start.getTime() + m * 60000);
     saveSession({ startedAt: start.toISOString(), endedAt: end.toISOString(), seconds: m * 60, category: $("mCat").value, note: $("mNote").value.trim().slice(0, 200), preset: "manual", completed: true });
     $("mMin").value = ""; $("mNote").value = "";

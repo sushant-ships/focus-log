@@ -1,5 +1,5 @@
 // Caches the app shell so Focus Log opens offline. Supabase API calls are never cached.
-var CACHE = "focuslog-shell-v8";
+var CACHE = "focuslog-shell-v9";
 var SHELL = ["./", "index.html", "app.js", "config.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png"];
 
 self.addEventListener("install", function (e) {
@@ -24,4 +24,13 @@ self.addEventListener("fetch", function (e) {
       return res;
     }).catch(function () { return caches.match(req).then(function (hit) { return hit || (req.mode === "navigate" ? caches.match("index.html") : undefined); }); })
   );
+});
+
+// Tapping an alert brings the app to the front.
+self.addEventListener("notificationclick", function (e) {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (list) {
+    for (var i = 0; i < list.length; i++) { if ("focus" in list[i]) return list[i].focus(); }
+    if (self.clients.openWindow) return self.clients.openWindow("./");
+  }));
 });

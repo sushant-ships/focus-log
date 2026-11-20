@@ -162,12 +162,30 @@ input[type=text],input[type=email],input[type=password],input[type=number],input
 @media (max-width:760px){
   .row{grid-template-columns:minmax(0,1fr) auto; grid-template-areas:"t del" "d tag" "n n"}
   .row .t{grid-area:t}
-  .row .del{grid-area:del; justify-self:end}
+  .row .acts{grid-area:del; justify-self:end}
   .row .d{grid-area:d}
   .row .tag{grid-area:tag; justify-self:end}
   .row .n{grid-area:n; color:var(--muted); font-size:14px}
   .row .n:empty{display:none}
 }
+.acts{display:flex; gap:2px; justify-content:flex-end}
+.tiles{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-top:14px}
+.tile{background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:12px 14px; min-width:0}
+.tile b{display:block; font-family:var(--f-mono); font-size:22px; font-weight:500; letter-spacing:-0.02em; font-variant-numeric:tabular-nums}
+.tile span{font-size:13px; color:var(--muted)}
+.statgrid{display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:20px 28px; margin-top:18px}
+.mini{font-family:var(--f-body); font-size:13px; margin:0 0 10px; color:var(--muted); font-weight:600; letter-spacing:.04em; text-transform:uppercase}
+.heat{display:grid; grid-template-rows:repeat(7,auto); grid-auto-flow:column; grid-auto-columns:minmax(0,1fr); gap:3px; max-width:420px}
+.heat i{display:block; aspect-ratio:1; border-radius:3px; background:var(--track)}
+.heat i.part{background:var(--accent); opacity:.4}
+.heat i.hit{background:var(--accent)}
+.heat i.ideal{background:var(--deep)}
+.heat i.fut{opacity:.35}
+.catrow{display:grid; grid-template-columns:84px minmax(0,1fr) auto; gap:10px; align-items:center; font-size:14px; padding:5px 0}
+.catrow span:first-child{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.catrow .cv{font-family:var(--f-mono); font-size:12px; color:var(--muted)}
+.catrow .bar{height:8px}
+@media (max-width:760px){.tiles{grid-template-columns:repeat(2,minmax(0,1fr))} .statgrid{grid-template-columns:minmax(0,1fr)}}
 .hint{margin:-8px 0 14px; color:var(--muted); font-size:14px}
 .empty{padding:24px 0; color:var(--muted); max-width:52ch; margin:0}
 
@@ -286,6 +304,7 @@ body.focusmode #exitFocus:hover, body.focusmode #exitFocus:focus-visible{opacity
     </div>
     <div class="topright">
       <label class="sound"><input type="checkbox" id="sound" checked> Sound</label>
+      <label class="sound" id="notifyWrap" title="Notify me when a session or break ends while I am in another tab or app" hidden><input type="checkbox" id="notify"> Alerts</label>
       <span class="who" id="who"></span>
       <button class="small link" id="signout" type="button">Sign out</button>
     </div>
@@ -352,6 +371,15 @@ body.focusmode #exitFocus:hover, body.focusmode #exitFocus:focus-visible{opacity
     </section>
   </div>
 
+  <section class="card" aria-label="Stats">
+    <div class="hhead"><h2>Stats</h2><span class="range" id="statsSub"></span></div>
+    <div class="tiles" id="tiles"></div>
+    <div class="statgrid">
+      <div><h3 class="mini">Last 16 weeks</h3><div class="heat" id="heat" aria-hidden="true"></div></div>
+      <div><h3 class="mini">This month by category</h3><div id="catBars"></div></div>
+    </div>
+  </section>
+
   <section class="card" aria-label="Session history">
     <div class="hhead"><h2>Sessions</h2><span class="range" id="count"></span></div>
     <div id="list"></div>
@@ -359,15 +387,16 @@ body.focusmode #exitFocus:hover, body.focusmode #exitFocus:focus-visible{opacity
   </section>
 
   <details class="card" id="manual">
-    <summary>Add past session</summary>
-    <p class="hint">For work you did without the timer.</p>
+    <summary id="manualSum">Add past session</summary>
+    <p class="hint" id="manualHint">For work you did without the timer.</p>
     <form class="form" id="manualForm">
       <label class="f">Date<input type="date" id="mDate" required></label>
       <label class="f">Start<input type="time" id="mTime" required></label>
       <label class="f">Minutes<input type="number" id="mMin" min="1" max="720" step="1" required style="width:96px"></label>
       <label class="f">Category<select id="mCat"></select></label>
       <label class="f grow">Note<input type="text" id="mNote" maxlength="200" placeholder="Optional"></label>
-      <button class="btn" type="submit">Add session</button>
+      <button class="btn" id="manualSubmit" type="submit">Add session</button>
+      <button class="btn ghost" id="manualCancel" type="button" hidden>Cancel</button>
     </form>
   </details>
 
